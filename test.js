@@ -5,8 +5,51 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Sentinel = require('./index.js');
 
+const KEY_ENV = ['MASKBREAK_API_KEY', 'SENTINEL_KEY', 'SENTINEL_API_KEY'];
+
+// Run fn with exactly the given key env vars set; restore the real env after.
+function withKeyEnv(vars, fn) {
+    const saved = {};
+    for (const name of KEY_ENV) { saved[name] = process.env[name]; delete process.env[name]; }
+    Object.assign(process.env, vars);
+    try { return fn(); } finally {
+        for (const name of KEY_ENV) {
+            if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name];
+        }
+    }
+}
+
 test('constructor throws without apiKey', () => {
-    assert.throws(() => new Sentinel({}), /apiKey is required/);
+    withKeyEnv({}, () => {
+        assert.throws(() => new Sentinel({}), /apiKey is required/);
+        assert.throws(() => new Sentinel(), /set MASKBREAK_API_KEY/);
+    });
+});
+
+test('constructor reads MASKBREAK_API_KEY from the environment', () => {
+    withKeyEnv({ MASKBREAK_API_KEY: 'sk_live_new' }, () => {
+        assert.equal(new Sentinel().apiKey, 'sk_live_new');
+        assert.equal(new Sentinel({ apiKey: undefined }).apiKey, 'sk_live_new');
+    });
+});
+
+test('constructor still reads the older SENTINEL_KEY and SENTINEL_API_KEY names', () => {
+    withKeyEnv({ SENTINEL_KEY: 'sk_live_old' }, () => {
+        assert.equal(new Sentinel().apiKey, 'sk_live_old');
+    });
+    withKeyEnv({ SENTINEL_API_KEY: 'sk_live_legacy' }, () => {
+        assert.equal(new Sentinel().apiKey, 'sk_live_legacy');
+    });
+});
+
+test('MASKBREAK_API_KEY wins over the older names; an explicit apiKey wins over all', () => {
+    withKeyEnv({ MASKBREAK_API_KEY: 'sk_live_new', SENTINEL_KEY: 'sk_live_old', SENTINEL_API_KEY: 'sk_live_legacy' }, () => {
+        assert.equal(new Sentinel().apiKey, 'sk_live_new');
+        assert.equal(new Sentinel({ apiKey: 'sk_live_explicit' }).apiKey, 'sk_live_explicit');
+    });
+    withKeyEnv({ MASKBREAK_API_KEY: '', SENTINEL_KEY: 'sk_live_old' }, () => {
+        assert.equal(new Sentinel().apiKey, 'sk_live_old');
+    });
 });
 
 test('constructor accepts apiKey', () => {

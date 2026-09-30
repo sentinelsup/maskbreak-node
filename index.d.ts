@@ -32,6 +32,21 @@ export interface NetworkSignals {
     residential: boolean;
     /** VPN/proxy service name when known; otherwise null. */
     service: string | null;
+    /** False for a partial network reading (higher chance of a wrong answer)
+     *  or when there was no reading. Informational; never changes `decision`. */
+    complete?: boolean;
+    /** True when a token arrived but the network check could not measure the
+     *  visitor (blocked or stripped measurement). Informational. */
+    sdk_blocked?: boolean;
+}
+
+export interface EvidenceFreshness {
+    /** Seconds between the network reading and this call */
+    network_age_s?: number;
+    /** Seconds between the device event and this call */
+    device_age_s?: number;
+    /** True when the device event was marked as a replay of an earlier one */
+    device_replayed?: boolean;
 }
 
 export interface DeviceSignals {
@@ -55,6 +70,17 @@ export interface DeviceSignals {
      *  Requires accountId and an identified device; links are pruned after 90 days of inactivity. */
     linked_accounts?: number;
     multi_account?: boolean;
+    /** Customer-only distinct verified events in the last 90 days. Test keys excluded. */
+    customer_history?: {
+        device_key: string; window_days: 90; visits: number; returning: boolean;
+        first_seen: string; last_seen: string; accounts: number;
+    };
+    /** Optional HTTP-only beta. Resemblance is not identity or a fraud score. */
+    gpu_evidence?: {
+        experimental: true;
+        status: 'recorded' | 'disabled' | 'invalid' | 'expired_or_used' | 'not_saved' | 'unavailable';
+        nearest?: {device_key: string; distance: number} | null;
+    };
 }
 
 export type ReasonCode =
@@ -97,6 +123,14 @@ export interface EvaluateResult {
     exception_matched?: string[];
     /** Present on test-token / sk_test_ key responses — never billed */
     test?: boolean;
+    /** Whether the device layer was usable: "ok" (device present),
+     *  "unavailable" (an event id was sent but did not resolve) or
+     *  "not_sent". Hold sensitive actions when it is not "ok". */
+    device_evidence?: 'ok' | 'unavailable' | 'not_sent';
+    /** How fresh the evidence was; only known fields are present */
+    evidence?: EvidenceFreshness;
+    /** Present and true when the network layer was unavailable */
+    degraded?: boolean;
     /** Legacy fields (kept for backwards compatibility) */
     status: string;
     details: EvaluateDetails;
@@ -144,8 +178,9 @@ export interface LookupResponse {
 }
 
 export interface SentinelOptions {
-    /** Your Sentinel API key (starts with sk_live_). Get one free at https://maskbreak.com/signup */
-    apiKey: string;
+    /** Your Sentinel API key (starts with sk_live_). Get one free at https://maskbreak.com/signup
+     *  Omitted: read from the MASKBREAK_API_KEY env var (older SENTINEL_KEY / SENTINEL_API_KEY still work). */
+    apiKey?: string;
     /** Override the API base URL (default: https://maskbreak.com) */
     endpoint?: string;
     /** Per-request timeout in ms (default: 5000) */
@@ -155,7 +190,7 @@ export interface SentinelOptions {
 export interface EvaluateInput {
     /** Client-side Sentinel token from the frontend SDK */
     token: string;
-    /** Optional Fingerprint event id for device-layer signals */
+    /** Optional device event id for device-layer signals */
     fingerprintEventId?: string;
     /** Optional account/user id — enables multi-accounting detection
      *  (device.linked_accounts / device.multi_account) */
@@ -172,7 +207,7 @@ export class SentinelError extends Error {
 }
 
 export default class Sentinel {
-    constructor(opts: SentinelOptions);
+    constructor(opts?: SentinelOptions);
     evaluate(input: EvaluateInput): Promise<EvaluateResult>;
     /** Look up an arbitrary public IP address (GET /v1/lookup/{ip}).
      *  Limited to public cloud-range/Tor evidence; unknown does not mean safe.

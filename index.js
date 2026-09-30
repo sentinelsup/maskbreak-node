@@ -4,7 +4,7 @@
  *
  * Usage:
  *   const Sentinel = require('@sentinelsup/sdk');
- *   const sentinel = new Sentinel({ apiKey: process.env.SENTINEL_KEY });
+ *   const sentinel = new Sentinel();   // reads MASKBREAK_API_KEY from the env
  *   const result = await sentinel.evaluate({ token });
  *   if (result.decision === 'block') return res.status(403).end();
  */
@@ -20,18 +20,34 @@ class SentinelError extends Error {
     }
 }
 
+// MASKBREAK_API_KEY is the name every doc surface uses. SENTINEL_KEY and
+// SENTINEL_API_KEY are older names, still read so existing installs keep
+// working; the first non-empty one wins.
+const API_KEY_ENV_NAMES = ['MASKBREAK_API_KEY', 'SENTINEL_KEY', 'SENTINEL_API_KEY'];
+
+function apiKeyFromEnv() {
+    const env = (typeof process !== 'undefined' && process && process.env) || {};
+    for (const name of API_KEY_ENV_NAMES) {
+        if (typeof env[name] === 'string' && env[name]) return env[name];
+    }
+    return '';
+}
+
 class Sentinel {
     /**
-     * @param {object} opts
-     * @param {string} opts.apiKey — your Sentinel API key (starts with sk_live_)
+     * @param {object} [opts]
+     * @param {string} [opts.apiKey] — your Sentinel API key (starts with sk_live_).
+     *   Falls back to the MASKBREAK_API_KEY env var, then SENTINEL_KEY, then SENTINEL_API_KEY.
      * @param {string} [opts.endpoint] — override the default API base URL (for testing)
      * @param {number} [opts.timeoutMs=5000] — per-request timeout
      */
-    constructor(opts) {
-        if (!opts || typeof opts.apiKey !== 'string' || !opts.apiKey) {
-            throw new SentinelError('Sentinel: apiKey is required. Get one free at https://maskbreak.com/signup');
+    constructor(opts = {}) {
+        opts = opts || {};
+        const apiKey = (typeof opts.apiKey === 'string' && opts.apiKey) || apiKeyFromEnv();
+        if (!apiKey) {
+            throw new SentinelError('Sentinel: apiKey is required. Pass it explicitly or set MASKBREAK_API_KEY (the older SENTINEL_KEY still works). Get one free at https://maskbreak.com/signup');
         }
-        this.apiKey = opts.apiKey;
+        this.apiKey = apiKey;
         this.endpoint = (opts.endpoint || DEFAULT_ENDPOINT).replace(/\/$/, '');
         this.timeoutMs = opts.timeoutMs || 5000;
     }
@@ -94,7 +110,7 @@ class Sentinel {
      *
      * @param {object} input
      * @param {string} input.token — Sentinel client-side token from the frontend SDK
-     * @param {string} [input.fingerprintEventId] — optional Fingerprint event id for device signals
+     * @param {string} [input.fingerprintEventId] — optional device event id for device signals
      * @param {string} [input.accountId] — optional account/user id for multi-accounting detection
      * @param {string} [input.email] — optional signup email; adds `email.disposable` to the
      *   response (burner domains escalate allow → review). Checked transiently, never stored.
@@ -174,6 +190,8 @@ module.exports.SentinelError = SentinelError;
  * @property {string[]} [rule_matched] — signals that triggered a custom rule
  * @property {string[]} [exception_matched] — matched per-IP/visitor pins
  * @property {boolean} [test] — present on test-token / test-key responses (never billed)
+ * @property {'ok'|'unavailable'|'not_sent'} [device_evidence] — whether the device layer was usable; hold sensitive actions when not 'ok'
+ * @property {{network_age_s?: number, device_age_s?: number, device_replayed?: boolean}} [evidence] — how fresh the evidence was (known fields only)
  * @property {EvaluateDetails} details — legacy network signals (backwards compatibility)
  * @property {DeviceIntel|null} [deviceIntel] — legacy device signals (backwards compatibility)
  */

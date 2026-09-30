@@ -3,7 +3,7 @@
  *
  *   npm install express stripe @sentinelsup/sdk
  *
- *   SENTINEL_KEY=sk_live_xxx STRIPE_KEY=sk_live_xxx node examples/stripe-checkout.js
+ *   MASKBREAK_API_KEY=sk_live_xxx STRIPE_KEY=sk_live_xxx node examples/stripe-checkout.js
  */
 const express = require('express');
 const Stripe = require('stripe');
@@ -13,7 +13,7 @@ const app = express();
 app.use(express.json());
 
 const stripe = Stripe(process.env.STRIPE_KEY);
-const sentinel = new Sentinel({ apiKey: process.env.SENTINEL_KEY });
+const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 // Demo catalog: prices come from the server, never the request body.
 const catalog = new Map([['demo', { amount: 2000, currency: 'usd' }]]);
 

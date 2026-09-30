@@ -15,7 +15,7 @@ check, env var, and a test:
 
 > Fetch https://maskbreak.com/integrate.md and follow it to add Maskbreak fraud
 > protection to this app — protect signup, login, and checkout. My API key
-> is sk_live_YOUR_KEY; put it in a SENTINEL_KEY env var, never in
+> is sk_live_YOUR_KEY; put it in a MASKBREAK_API_KEY env var, never in
 > client-side code. Then show me how to test it.
 
 [`integrate.md`](https://maskbreak.com/integrate.md) is the canonical
@@ -34,7 +34,7 @@ Zero dependencies. Requires Node.js 18+ with built-in `fetch`. Other runtimes an
 ```js
 const Sentinel = require('@sentinelsup/sdk');
 
-const sentinel = new Sentinel({ apiKey: process.env.SENTINEL_KEY });
+const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 const result = await sentinel.evaluate({
   token: req.body.sentinelToken  // from the frontend SDK
@@ -47,6 +47,8 @@ if (result.decision === 'block') {
 ```
 
 Get a free API key (no credit card) at [maskbreak.com/signup](https://maskbreak.com/signup).
+
+Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the environment; the older `SENTINEL_KEY` and `SENTINEL_API_KEY` names are still read as fallbacks.
 
 ## What you get back
 
@@ -113,7 +115,7 @@ fetch('/checkout', {
 ```js
 const Sentinel = require('@sentinelsup/sdk');
 const stripe = require('stripe')(process.env.STRIPE_KEY);
-const sentinel = new Sentinel({ apiKey: process.env.SENTINEL_KEY });
+const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 app.post('/checkout', async (req, res) => {
   const { decision } = await sentinel.evaluate({ token: req.body.token, fingerprintEventId: req.body.fingerprintEventId });
@@ -141,10 +143,14 @@ app.post('/auth/google', async (req, res) => {
 ### Custom policy with `shouldBlock`
 
 ```js
-// Only block when we see both residential proxy AND an antidetect browser
+// Keep the API's own blocks, and also block a VPN visitor whose device is
+// already behind another of your accounts. The API alone answers review for
+// that visit (a VPN is review; a shared device adds the multi_account_device
+// reason without changing the decision). device.multi_account needs the
+// accountId you pass and a resolved device event.
 const blocked = await sentinel.shouldBlock(
-  { token, fingerprintEventId },
-  r => r.network.proxy && r.network.residential && r.device?.antidetect
+  { token, fingerprintEventId, accountId: user.id },
+  r => r.decision === 'block' || (r.network.vpn && r.device?.multi_account === true)
 );
 ```
 
@@ -175,11 +181,11 @@ const info = await sentinel.lookup('185.220.101.34');
 
 ## API
 
-### `new Sentinel({ apiKey, endpoint?, timeoutMs? })`
+### `new Sentinel({ apiKey?, endpoint?, timeoutMs? })`
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `apiKey` | string | required | Your key starting with `sk_live_` |
+| `apiKey` | string | `$MASKBREAK_API_KEY` (then `$SENTINEL_KEY`, `$SENTINEL_API_KEY`) | Your key starting with `sk_live_`; required unless one of those env vars is set |
 | `endpoint` | string | `https://maskbreak.com` | Override base URL |
 | `timeoutMs` | number | `5000` | Per-request timeout |
 
@@ -189,6 +195,8 @@ Returns `EvaluateResult`. Throws `SentinelError` on network/API failure — the 
 
 - `fingerprintEventId` — requests device signals (tampering, automation, emulator, …). When the device is identified, `device.times_seen`, `device.first_seen` and `device.returning` describe its retained sightings across Maskbreak, not just your account. These records are pruned after 90 days of inactivity; `first_seen` is not necessarily the device's lifetime first visit.
 - `accountId` — your own user id for this session; with an identified device, enables customer-scoped account linking (`device.linked_accounts` / `device.multi_account`). Links are hash-only, never cross-customer, and pruned after 90 days of inactivity.
+- New `device.customer_history` reports distinct verified events, first/latest visit and associated account counts **only for your customer account** over a rolling 90-day window. Fresh live-key events start this history; test keys and duplicate event submissions do not add to it. Derive `accountId` from your backend's authenticated session, never a browser-claimed account ID. Shared devices are not automatically fraud. Legacy fields above retain their meanings.
+- An optional, default-off [GPU evidence beta](https://maskbreak.com/api#device-history) is available over raw HTTP with explicit browser collection. Published SDK versions may omit `gpuEvidence`; use the documented HTTP flow. It does not change fraud decisions or automatically link devices.
 - `email` — adds `email.disposable` to the response; burner domains escalate `allow` to `review`.
 
 ### `sentinel.lookup(ip)`
@@ -216,7 +224,9 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 
 ## Rate limits
 
-Free tier: **1,000 requests/hour** per API key (`evaluate()` and `lookup()` share the bucket). No monthly cap, no credit card.
+Visitor checks (`evaluate()`) are counted per calendar month in UTC, with an hourly cap: **Free — 10,000 a month, up to 1,000 an hour, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 10× the plan's checks (100,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges.
+
+On `503` with `.body.code === 'storage_unavailable'`, the key could not be checked at that moment (not an invalid key; `401` is): retry later and apply your outage policy meanwhile.
 
 On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After` or `X-RateLimit-*`, use raw HTTP and read those headers from the response. Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest keys have no per-key hourly cap, but independent endpoint and abuse-protection limits still apply.
 

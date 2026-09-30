@@ -2,10 +2,10 @@
  * Example customer policy: count signups per identified device (not email).
  * A shared device is not itself proof of fraud. Choose your own threshold.
  *
- *   SENTINEL_KEY=sk_live_xxx node examples/signup-guard.js
+ *   MASKBREAK_API_KEY=sk_live_xxx node examples/signup-guard.js
  */
 const Sentinel = require('@sentinelsup/sdk');
-const sentinel = new Sentinel({ apiKey: process.env.SENTINEL_KEY });
+const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 // Demo-only, in-memory state. Production needs an atomic, persistent counter.
 const signupsByVisitor = new Map();
