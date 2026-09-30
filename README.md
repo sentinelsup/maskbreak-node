@@ -14,9 +14,12 @@ one prompt and it wires the whole integration — frontend script, backend
 check, env var, and a test:
 
 > Fetch https://maskbreak.com/integrate.md and follow it to add Maskbreak fraud
-> protection to this app — protect signup, login, and checkout. My API key
-> is sk_live_YOUR_KEY; put it in a MASKBREAK_API_KEY env var, never in
-> client-side code. Then show me how to test it.
+> protection to this app — protect signup, login, and checkout. Start in watch
+> mode (MASKBREAK_MODE). Read the API key from the server-only
+> MASKBREAK_API_KEY environment variable; I will configure the secret
+> separately. Never put it in client-side code. Then show me how to test it.
+
+Never paste the key itself into a prompt: set it in your hosting secrets.
 
 [`integrate.md`](https://maskbreak.com/integrate.md) is the canonical
 machine-readable integration guide, kept in sync with the live API.
@@ -31,20 +34,37 @@ Zero dependencies. Requires Node.js 18+ with built-in `fetch`. Other runtimes an
 
 ## Quick start
 
+Add `<script async src="https://maskbreak.com/assets/sentinel.js"></script>` to
+the page with your form and `class="monocle-enriched"` to the form: it adds two
+hidden fields on submit, `monocle` and `sentinel_fp`. Your server forwards them:
+
 ```js
 const Sentinel = require('@sentinelsup/sdk');
 
 const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
-const result = await sentinel.evaluate({
-  token: req.body.sentinelToken  // from the frontend SDK
-});
+// Start in watch mode: log Maskbreak's answer and let everyone through.
+// When Events look right, set MASKBREAK_MODE=enforce and redeploy.
+const MODE = process.env.MASKBREAK_MODE || 'watch';
 
-if (result.decision === 'block') {
-  return res.status(403).json({ error: 'blocked' });
+let result = null;
+try {
+  result = await sentinel.evaluate({ token: req.body.monocle, fingerprintEventId: req.body.sentinel_fp });
+  console.log('[maskbreak]', MODE, result.decision, result.reasons);
+} catch (err) {
+  console.log('[maskbreak]', MODE, 'check unavailable:', err.message); // evaluate() throws without a token
 }
-// Handle 'review' according to your policy; 'allow' is not a safety guarantee.
+if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
+  return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
+}
+// Watch mode, or an allow: continue with your existing handler.
 ```
+
+A form that submits with JavaScript (fetch, React) calls
+`await window.Sentinel.collect()` before sending and adds its `token` and
+`fingerprintEventId` to the request. The full enforce policy (review, missing
+evidence, test and degraded answers) is in
+[integrate.md](https://maskbreak.com/integrate.md).
 
 Get a free API key (no credit card) at [maskbreak.com/signup](https://maskbreak.com/signup).
 
@@ -130,10 +150,10 @@ app.post('/checkout', async (req, res) => {
 
 ```js
 app.post('/auth/google', async (req, res) => {
-  const { credential, sentinelToken, fingerprintEventId } = req.body;
+  const { credential, monocle, sentinel_fp } = req.body;
   const ticket = await googleClient.verifyIdToken({ idToken: credential });
 
-  const result = await sentinel.evaluate({ token: sentinelToken, fingerprintEventId });
+  const result = await sentinel.evaluate({ token: monocle, fingerprintEventId: sentinel_fp });
   if (result.decision === 'block') return res.status(403).json({ error: 'signup_blocked' });
 
   await createUser(ticket.getPayload().email, result.device?.visitor_id);
@@ -220,7 +240,7 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 ```
 
 - **No account yet?** The public sandbox key `sk_test_sandbox` answers the same `test_*` tokens with the same shapes — no signup, nothing stored.
-- **CI / staging with real traffic:** every account also has a personal `sk_test_…` key (Settings → API Key) that runs the complete live pipeline — device intelligence, your rules and exception pins — but events are flagged as test, excluded from usage, and never fire webhooks. It is exempt from the account's IP allowlist.
+- **CI / staging with real traffic:** every account also has a personal `sk_test_…` key (Settings → API keys) that runs the complete live pipeline — device intelligence, your rules and exception pins. Its events are marked test, kept out of your stats and never fire webhooks; its checks count toward the monthly allowance (the fixed `test_*` tokens and `sk_test_sandbox` do not). It is exempt from the account's IP allowlist.
 
 ## Rate limits
 

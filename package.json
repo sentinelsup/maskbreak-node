@@ -1,6 +1,6 @@
 {
   "name": "@sentinelsup/sdk",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Official Node.js SDK for Maskbreak — evaluate SDK-backed visits for network and device fraud signals, or look up limited public IP intelligence.",
   "keywords": [
     "fraud-detection",
