@@ -18,13 +18,14 @@ const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 const catalog = new Map([['demo', { amount: 2000, currency: 'usd' }]]);
 
 app.post('/checkout', async (req, res) => {
-    const { productId, sentinelToken, fingerprintEventId } = req.body;
+    // { token, fingerprintEventId } is what Sentinel.collect() returns in the browser.
+    const { productId, token, fingerprintEventId } = req.body;
     const price = catalog.get(productId);
     if (!price) return res.status(400).json({ error: 'Unknown product.' });
 
     // 1. Screen the session BEFORE creating a Stripe payment intent.
     try {
-        const result = await sentinel.evaluate({ token: sentinelToken, fingerprintEventId });
+        const result = await sentinel.evaluate({ token, fingerprintEventId });
 
         // Honor the final decision, including your configured rules and pins.
         if (result.decision === 'block') {

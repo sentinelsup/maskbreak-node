@@ -99,8 +99,10 @@ export interface EvaluateResult {
     decision: 'allow' | 'review' | 'block';
     /** 0–100 weighted risk score */
     risk_score: number;
-    /** Legacy convenience flag: VPN/proxy/antidetect/automation/emulator.
-     *  Does NOT cover Tor or datacenter — route on `decision` instead. */
+    /** Legacy convenience flag: true when VPN, proxy, Tor, antidetect, automation,
+     *  emulator or virtual machine fired. A datacenter or anonymous network alone does
+     *  not set it, and email, timezone, rules and pins never change it — route on
+     *  `decision` instead. */
     isSuspicious: boolean;
     ip: string | null;
     country: string | null;
@@ -121,7 +123,8 @@ export interface EvaluateResult {
     rule_matched?: string[];
     /** Matched per-IP/visitor pins (decision_source === 'exception') */
     exception_matched?: string[];
-    /** Present on test-token / sk_test_ key responses — never billed */
+    /** Present on test-token / sk_test_ key responses. Test-key checks count toward
+     *  the monthly allowance; the fixed test_* tokens never count. */
     test?: boolean;
     /** Whether the device layer was usable: "ok" (device present),
      *  "unavailable" (an event id was sent but did not resolve) or
@@ -212,9 +215,11 @@ export default class Sentinel {
     /** Look up an arbitrary public IP address (GET /v1/lookup/{ip}).
      *  Limited to public cloud-range/Tor evidence; unknown does not mean safe.
      *  Use evaluate() with a browser token for VPN/proxy evidence.
-     *  Shares the per-key hourly quota with evaluate(). */
+     *  Shares the hourly quota with evaluate() (one per account for the live
+     *  keys; the test key has its own) and has its own monthly allowance. */
     lookup(ip: string): Promise<LookupResponse>;
-    /** Runs evaluate() and returns a boolean. Default predicate (since 0.3.0):
+    /** Runs evaluate() and returns a boolean; throws SentinelError like evaluate()
+     *  (no token, API failure). Default predicate (since 0.3.0):
      *  `r => r.decision === 'block'` — honors your dashboard rules and
      *  allow/block pins. Pass your own predicate for custom policy. */
     shouldBlock(input: EvaluateInput, predicate?: (r: EvaluateResult) => boolean): Promise<boolean>;

@@ -10,8 +10,8 @@ const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 // Demo-only, in-memory state. Production needs an atomic, persistent counter.
 const signupsByVisitor = new Map();
 
-async function handleSignup({ email, sentinelToken, fingerprintEventId }) {
-    const result = await sentinel.evaluate({ token: sentinelToken, fingerprintEventId });
+async function handleSignup({ email, token, fingerprintEventId }) {
+    const result = await sentinel.evaluate({ token, fingerprintEventId });
     const visitorId = result.device && result.device.visitor_id;
 
     // Do not merge unrelated users behind a shared or missing IP into one device.
@@ -31,5 +31,5 @@ async function handleSignup({ email, sentinelToken, fingerprintEventId }) {
 }
 
 // Demo
-handleSignup({ email: 'test@example.com', sentinelToken: 'YOUR_TOKEN_HERE', fingerprintEventId: 'YOUR_EVENT_ID_HERE' })
+handleSignup({ email: 'test@example.com', token: 'YOUR_TOKEN_HERE', fingerprintEventId: 'YOUR_EVENT_ID_HERE' })
     .catch(err => console.error('✗', err.message));

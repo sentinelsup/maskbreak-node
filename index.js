@@ -5,8 +5,9 @@
  * Usage:
  *   const Sentinel = require('@sentinelsup/sdk');
  *   const sentinel = new Sentinel();   // reads MASKBREAK_API_KEY from the env
- *   const result = await sentinel.evaluate({ token });
- *   if (result.decision === 'block') return res.status(403).end();
+ *   let result = null;   // evaluate() throws without a token or when the API fails
+ *   try { result = await sentinel.evaluate({ token }); } catch (err) { console.log(err.message); }
+ *   if (result && result.decision === 'block') return res.status(403).end();
  */
 
 const DEFAULT_ENDPOINT = 'https://maskbreak.com';
@@ -137,7 +138,8 @@ class Sentinel {
      * score and limited public-feed evidence (cloud ranges and Tor).
      * VPN/proxy evidence needs evaluate() with a browser token; an unknown
      * IP or false signal is not proof that the visitor is safe.
-     * Shares the per-key hourly quota with evaluate().
+     * Shares the hourly quota with evaluate() (one per account for the live keys;
+     * the test key has its own) and has its own monthly allowance.
      *
      * @param {string} ip — public IPv4 or IPv6 address, e.g. '185.220.101.34'
      * @returns {Promise<LookupResponse>}
@@ -177,7 +179,7 @@ module.exports.SentinelError = SentinelError;
  * @typedef {object} EvaluateResult
  * @property {'allow'|'review'|'block'} decision — route on this
  * @property {number} risk_score — 0–100 weighted risk score
- * @property {boolean} isSuspicious — true if network or device signals flag the session
+ * @property {boolean} isSuspicious — legacy flag: true when VPN, proxy, Tor, antidetect, automation, emulator or virtual machine fired (not a datacenter or anonymous network alone); route on `decision`
  * @property {string|null} ip
  * @property {string|null} country — 2-letter country code
  * @property {object} network — { vpn, proxy, datacenter, anonymous, tor, residential, service }
@@ -189,7 +191,7 @@ module.exports.SentinelError = SentinelError;
  * @property {'rules'|'exception'} [decision_source] — who authored the final decision when it was not the engine
  * @property {string[]} [rule_matched] — signals that triggered a custom rule
  * @property {string[]} [exception_matched] — matched per-IP/visitor pins
- * @property {boolean} [test] — present on test-token / test-key responses (never billed)
+ * @property {boolean} [test] — present on test-token / test-key responses (test-key checks count toward the monthly allowance; the fixed test_* tokens never count)
  * @property {'ok'|'unavailable'|'not_sent'} [device_evidence] — whether the device layer was usable; hold sensitive actions when not 'ok'
  * @property {{network_age_s?: number, device_age_s?: number, device_replayed?: boolean}} [evidence] — how fresh the evidence was (known fields only)
  * @property {EvaluateDetails} details — legacy network signals (backwards compatibility)

@@ -117,7 +117,9 @@ network (VPN/proxy/datacenter) and device (antidetect/bot/tampering):
 </form>
 ```
 
-Collect both and send them to your backend:
+Collect both and send them to your backend. `collect()` waits at most 5
+seconds for the device check (`collect({ timeout: ms })` to change it); a
+value that is not there by then is `null`:
 
 ```js
 const { token, fingerprintEventId } = await window.Sentinel.collect();
@@ -128,7 +130,27 @@ fetch('/checkout', {
 });
 ```
 
+If your site sends a Content-Security-Policy header, it must allow the SDK's
+hosts: [the list in the integration guide](https://maskbreak.com/integrate.md#content-security-policy).
+
 ## Examples
+
+`evaluate()` throws when the browser sent no token or the API cannot be
+reached, so every handler below catches it. In Express 4 an async handler's
+uncaught error is an unhandled rejection, which ends the whole Node process, not
+just the request. The examples use this helper and treat `null` as "no answer":
+decide what your endpoint does then (here: continue).
+
+```js
+async function check(input) {
+  try {
+    return await sentinel.evaluate(input);
+  } catch (err) {
+    console.log('[maskbreak] check unavailable:', err.message);
+    return null;
+  }
+}
+```
 
 ### Stripe Checkout — block card testing
 
@@ -138,8 +160,8 @@ const stripe = require('stripe')(process.env.STRIPE_KEY);
 const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 app.post('/checkout', async (req, res) => {
-  const { decision } = await sentinel.evaluate({ token: req.body.token, fingerprintEventId: req.body.fingerprintEventId });
-  if (decision === 'block') return res.status(403).json({ error: 'declined' });
+  const result = await check({ token: req.body.token, fingerprintEventId: req.body.fingerprintEventId });
+  if (result && result.decision === 'block') return res.status(403).json({ error: 'declined' });
 
   const intent = await stripe.paymentIntents.create({ /* ... */ });
   res.json({ clientSecret: intent.client_secret });
@@ -153,10 +175,10 @@ app.post('/auth/google', async (req, res) => {
   const { credential, monocle, sentinel_fp } = req.body;
   const ticket = await googleClient.verifyIdToken({ idToken: credential });
 
-  const result = await sentinel.evaluate({ token: monocle, fingerprintEventId: sentinel_fp });
-  if (result.decision === 'block') return res.status(403).json({ error: 'signup_blocked' });
+  const result = await check({ token: monocle, fingerprintEventId: sentinel_fp });
+  if (result && result.decision === 'block') return res.status(403).json({ error: 'signup_blocked' });
 
-  await createUser(ticket.getPayload().email, result.device?.visitor_id);
+  await createUser(ticket.getPayload().email, result?.device?.visitor_id);
 });
 ```
 
@@ -167,7 +189,8 @@ app.post('/auth/google', async (req, res) => {
 // already behind another of your accounts. The API alone answers review for
 // that visit (a VPN is review; a shared device adds the multi_account_device
 // reason without changing the decision). device.multi_account needs the
-// accountId you pass and a resolved device event.
+// accountId you pass and a resolved device event. shouldBlock() throws like
+// evaluate(): call it inside try/catch.
 const blocked = await sentinel.shouldBlock(
   { token, fingerprintEventId, accountId: user.id },
   r => r.decision === 'block' || (r.network.vpn && r.device?.multi_account === true)
@@ -181,8 +204,8 @@ const blocked = await sentinel.shouldBlock(
 // refreshed disposable-domain feed. A hit adds the disposable_email
 // reason, raises risk_score, and escalates allow → review. The address
 // is checked transiently — never stored or logged.
-const result = await sentinel.evaluate({ token, email: req.body.email });
-if (result.email?.disposable) {
+const result = await check({ token, email: req.body.email });
+if (result?.email?.disposable) {
   // e.g. require a real address before granting the trial
 }
 ```
@@ -211,7 +234,7 @@ const info = await sentinel.lookup('185.220.101.34');
 
 ### `sentinel.evaluate({ token, fingerprintEventId?, accountId?, email? })`
 
-Returns `EvaluateResult`. Throws `SentinelError` on network/API failure — the error carries `.status` and `.body`.
+Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing or empty and on network/API failure — an API error carries `.status` and `.body`.
 
 - `fingerprintEventId` — requests device signals (tampering, automation, emulator, …). When the device is identified, `device.times_seen`, `device.first_seen` and `device.returning` describe its retained sightings across Maskbreak, not just your account. These records are pruned after 90 days of inactivity; `first_seen` is not necessarily the device's lifetime first visit.
 - `accountId` — your own user id for this session; with an identified device, enables customer-scoped account linking (`device.linked_accounts` / `device.multi_account`). Links are hash-only, never cross-customer, and pruned after 90 days of inactivity.
@@ -221,11 +244,11 @@ Returns `EvaluateResult`. Throws `SentinelError` on network/API failure — the 
 
 ### `sentinel.lookup(ip)`
 
-Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Shares the per-key hourly quota with `evaluate()`.
+Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Shares the hourly quota with `evaluate()` (one per account for the live keys; the test key has its own) and has its own monthly allowance.
 
 ### `sentinel.shouldBlock({ token, fingerprintEventId? }, predicate?)`
 
-Convenience: runs `evaluate()` and returns a boolean. Default predicate is `r => r.decision === 'block'` (honors your dashboard rules and allow/block pins). Pass your own to build custom policies.
+Convenience: runs `evaluate()` and returns a boolean; it throws `SentinelError` in the same cases (no token, API failure), so call it inside `try`/`catch`. Default predicate is `r => r.decision === 'block'` (honors your dashboard rules and allow/block pins). Pass your own to build custom policies.
 
 > `accountId`, `email`, and `lookup()` require **v0.2.1 or later** (`npm install @sentinelsup/sdk@latest`) — the older 0.1.2 silently ignores `accountId`/`email`.
 
@@ -248,7 +271,7 @@ Visitor checks (`evaluate()`) are counted per calendar month in UTC, with an hou
 
 On `503` with `.body.code === 'storage_unavailable'`, the key could not be checked at that moment (not an invalid key; `401` is): retry later and apply your outage policy meanwhile.
 
-On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After` or `X-RateLimit-*`, use raw HTTP and read those headers from the response. Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest keys have no per-key hourly cap, but independent endpoint and abuse-protection limits still apply.
+On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After` or `X-RateLimit-*`, use raw HTTP and read those headers from the response. Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest accounts have no hourly or monthly cap and are exempt from the per-address request ceiling; `/v1/usage` and invalid-key protection keep their own limits.
 
 The current `evaluate()` helper requires a non-empty token and does not serialize `tz`. Raw HTTP accepts missing or empty tokens as degraded evaluations and supports the timezone returned by `Sentinel.collect()`. Use the [HTTP reference](https://maskbreak.com/api#evaluate) for those paths; missing network evidence does not prove a visitor is safe.
 

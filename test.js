@@ -256,7 +256,8 @@ test('checkout example honors final decisions and never pays on unavailable/test
         const seen = checkoutExample(result);
         let status = 200;
         const res = { status(code) { status = code; return this; }, json() {} };
-        await seen.handler({ body: { productId: 'demo', amount: 1, currency: 'eur', sentinelToken: 'fixture', fingerprintEventId: 'event' } }, res);
+        // The body Sentinel.collect() produces in the browser: { token, fingerprintEventId }.
+        await seen.handler({ body: { productId: 'demo', amount: 1, currency: 'eur', token: 'fixture', fingerprintEventId: 'event' } }, res);
         assert.equal(status, expectedStatus);
         assert.deepEqual(seen.input, { token: 'fixture', fingerprintEventId: 'event' });
         assert.deepEqual(seen.payments, expectedStatus === 200 ? [{ amount: 2000, currency: 'usd' }] : []);
@@ -273,7 +274,8 @@ test('signup example passes device evidence and does not count missing/shared IP
     };
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(`${__dirname}/examples/signup-guard.js`, 'utf8'), context);
-    await assert.rejects(context.handleSignup({ email: 'fixture@example.com', sentinelToken: 'fixture', fingerprintEventId: 'event' }), /Device check unavailable/);
+    await assert.rejects(context.handleSignup({ email: 'fixture@example.com', token: 'fixture', fingerprintEventId: 'event' }), /Device check unavailable/);
+    assert.equal(inputs.at(-1).token, 'fixture');
     assert.equal(inputs.at(-1).fingerprintEventId, 'event');
     assert.equal(vm.runInContext('signupsByVisitor.size', context), 0);
 });
