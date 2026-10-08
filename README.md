@@ -34,36 +34,94 @@ Zero dependencies. Requires Node.js 18+ with built-in `fetch`. Other runtimes an
 
 ## Quick start
 
-Add `<script async src="https://maskbreak.com/assets/sentinel.js"></script>` to
-the page with your form and `class="monocle-enriched"` to the form: it adds two
-hidden fields on submit, `monocle` and `sentinel_fp`. Your server forwards them:
+Three steps give you the first complete check, one that carries both the
+network token and the browser check. The Maskbreak dashboard's setup uses the
+same names.
+
+**1. Add the script to the page with your form**, and `class="monocle-enriched"`
+to the `<form>` element itself (never to an input):
+
+```html
+<script async src="https://maskbreak.com/assets/sentinel.js"></script>
+
+<form class="monocle-enriched" method="post" action="/signup">
+  <!-- your fields; the script adds monocle, sentinel_fp and sentinel_tz -->
+</form>
+```
+
+Your site sends a Content-Security-Policy header? helmet's default policy does,
+and it blocks the script until you add Maskbreak's hosts:
+[the list](https://maskbreak.com/integrate.md#content-security-policy). The
+hidden fields fill in a second or two after the page loads.
+
+**2. Send the check from your server.** One field mapping, whichever way the
+browser part sends it:
+
+| Form field | `Sentinel.collect()` returns | Send to the API as |
+|---|---|---|
+| `monocle` (network token) | `token` | `token` |
+| `sentinel_fp` (browser check) | `fingerprintEventId` | `fingerprintEventId` |
+| `sentinel_tz` (time zone) | `tz` | `tz` (optional; raw HTTP only, see below) |
+
+Start in watch mode: every submission is checked and logged, a submission with
+a missing field included (the dashboard then says which half did not arrive),
+and nobody is blocked. `evaluate()` will not send a request without the network
+token, so the quick start reports those submissions over plain HTTP:
 
 ```js
 const Sentinel = require('@sentinelsup/sdk');
 
-const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
+const sentinel = new Sentinel(); // reads MASKBREAK_API_KEY from the environment
 
 // Start in watch mode: log Maskbreak's answer and let everyone through.
 // When Events look right, set MASKBREAK_MODE=enforce and redeploy.
 const MODE = process.env.MASKBREAK_MODE || 'watch';
 
-let result = null;
-try {
-  result = await sentinel.evaluate({ token: req.body.monocle, fingerprintEventId: req.body.sentinel_fp });
-  console.log('[maskbreak]', MODE, result.decision, result.reasons);
-} catch (err) {
-  console.log('[maskbreak]', MODE, 'check unavailable:', err.message); // evaluate() throws without a token
+// evaluate() refuses to send without the network token. In watch mode a
+// submission without it is reported anyway, so the dashboard can say so.
+async function reportWithoutToken(fields) {
+  const response = await fetch('https://maskbreak.com/v1/evaluate', {
+    method: 'POST',
+    signal: AbortSignal.timeout(5000),
+    headers: {
+      Authorization: 'Bearer ' + process.env.MASKBREAK_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(fields)
+  });
+  return response.ok ? response.json() : null;
 }
-if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
-  return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
-}
-// Watch mode, or an allow: continue with your existing handler.
+
+app.post('/signup', async (req, res, next) => {
+  const body = req.body || {};
+  // Form fields -> API names. Sentinel.collect() already uses the API names.
+  const token = body.monocle || body.token;
+  const fingerprintEventId = body.sentinel_fp || body.fingerprintEventId;
+  let result = null, problem = null;
+  try {
+    if (token) {
+      result = await sentinel.evaluate({ token, fingerprintEventId });
+    } else if (MODE !== 'enforce') {
+      result = await reportWithoutToken({ fingerprintEventId, tz: body.sentinel_tz || body.tz });
+    }
+  } catch (err) {
+    problem = err.message; // an uncaught rejection would end an Express 4 process
+  }
+  console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result ? result.reasons : problem);
+  if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
+    return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
+  }
+  next(); // watch mode, or an allow: your existing handler runs
+});
 ```
 
-A form that submits with JavaScript (fetch, React) calls
-`await window.Sentinel.collect()` before sending and adds its `token` and
-`fingerprintEventId` to the request. The full enforce policy (review, missing
-evidence, test and degraded answers) is in
+**3. Submit your form once.** Deploy, open the page and submit the form. The
+first check then appears in the dashboard (Integration tab and Events).
+
+A form your JavaScript renders and submits (fetch, React, Next.js, Vue) sends
+`await window.Sentinel.collect()` with its data instead: see
+[Next.js App Router](#nextjs-app-router) below. The full enforce policy
+(review, missing evidence, test and degraded answers) is in
 [integrate.md](https://maskbreak.com/integrate.md).
 
 Get a free API key (no credit card) at [maskbreak.com/signup](https://maskbreak.com/signup).
@@ -103,45 +161,58 @@ compatibility with 0.1.0 integrations.
 
 ## Frontend setup
 
-Add the Maskbreak SDK to your frontend. One script loads **both** layers —
-network (VPN/proxy/datacenter) and device (antidetect/bot/tampering):
+Add the Maskbreak SDK to the page with your form. One script loads **both**
+layers — network (VPN/proxy/datacenter) and device (antidetect/bot/tampering):
 
 ```html
 <script async src="https://maskbreak.com/assets/sentinel.js"></script>
 
-<!-- Add class="monocle-enriched" to any form you want evaluated -->
+<!-- class="monocle-enriched" on the form itself, never on an input -->
 <form class="monocle-enriched" id="checkout-form">
-  <!-- The SDK injects both:
+  <!-- The SDK fills in:
        <input type="hidden" name="monocle"     value="eyJ...">  (network)
-       <input type="hidden" name="sentinel_fp" value="a1b2..."> (device) -->
+       <input type="hidden" name="sentinel_fp" value="a1b2..."> (device)
+       <input type="hidden" name="sentinel_tz" value="Europe/Tallinn"> -->
 </form>
 ```
 
-Collect both and send them to your backend. `collect()` waits at most 5
-seconds for the device check (`collect({ timeout: ms })` to change it); a
-value that is not there by then is `null`:
+If your site sends a Content-Security-Policy header (helmet's default policy
+does), it must allow the SDK's hosts or the browser blocks the script:
+[the list in the integration guide](https://maskbreak.com/integrate.md#content-security-policy).
+
+A form your JavaScript submits collects the same evidence and sends it to your
+backend. `collect()` waits at most 5 seconds for the device check
+(`collect({ timeout: ms })` to change it); a value that is not there by then is
+`null`. Check that the script is there, and never hold the form because of it:
 
 ```js
-const { token, fingerprintEventId } = await window.Sentinel.collect();
+const evidence = window.Sentinel ? await window.Sentinel.collect() : {};
 fetch('/checkout', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ token, fingerprintEventId })
+  // evidence = { token, fingerprintEventId, tz }, already the API's names
+  body: JSON.stringify({ email: form.email.value, ...evidence })
 });
 ```
 
-If your site sends a Content-Security-Policy header, it must allow the SDK's
-hosts: [the list in the integration guide](https://maskbreak.com/integrate.md#content-security-policy).
-
 ## Examples
 
-`evaluate()` throws when the browser sent no token or the API cannot be
-reached, so every handler below catches it. In Express 4 an async handler's
-uncaught error is an unhandled rejection, which ends the whole Node process, not
-just the request. The examples use this helper and treat `null` as "no answer":
-decide what your endpoint does then (here: continue).
+The examples below act on the decision, so they belong after the quick
+start's watch mode, once Events look right. `evaluate()` throws when the
+browser sent no token or the API cannot be reached, so every handler below
+catches it. In Express 4 an async handler's uncaught error is an unhandled
+rejection, which ends the whole Node process, not just the request. The
+examples use this helper, which reads both namings (form fields and
+`collect()`'s), and treat `null` as "no answer": decide what your endpoint does
+then (here: continue).
 
 ```js
+// Form fields (monocle, sentinel_fp) or collect()'s names (token, fingerprintEventId).
+const evidence = body => ({
+  token: body.token || body.monocle,
+  fingerprintEventId: body.fingerprintEventId || body.sentinel_fp
+});
+
 async function check(input) {
   try {
     return await sentinel.evaluate(input);
@@ -149,6 +220,77 @@ async function check(input) {
     console.log('[maskbreak] check unavailable:', err.message);
     return null;
   }
+}
+```
+
+### Next.js App Router
+
+Load the script once in `app/layout.js`
+(`<Script src="https://maskbreak.com/assets/sentinel.js" strategy="afterInteractive" />`
+from `next/script`), collect on submit in the client component that renders the
+form, and check in a Route Handler. The key stays in a server-only environment
+variable, never a `NEXT_PUBLIC_` one.
+
+```jsx
+// app/signup/signup-form.js
+'use client';
+
+export default function SignupForm() {
+  async function onSubmit(event) {
+    event.preventDefault();
+    const email = new FormData(event.currentTarget).get('email');
+    // No script (blocked or not loaded)? The form still goes through.
+    const evidence = window.Sentinel ? await window.Sentinel.collect() : {};
+    await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, ...evidence })
+    });
+  }
+  return (
+    <form onSubmit={onSubmit}>
+      <input type="email" name="email" required />
+      <button type="submit">Sign up</button>
+    </form>
+  );
+}
+```
+
+```js
+// app/api/signup/route.js (server only)
+import Sentinel from '@sentinelsup/sdk';
+
+const MODE = process.env.MASKBREAK_MODE || 'watch';
+// Created on the first request, not at import: `next build` imports route
+// modules, and new Sentinel() throws when MASKBREAK_API_KEY is not set there.
+let sentinel;
+
+// evaluate() refuses to send without the network token; watch mode reports anyway.
+async function reportWithoutToken(fields) {
+  const response = await fetch('https://maskbreak.com/v1/evaluate', {
+    method: 'POST',
+    signal: AbortSignal.timeout(5000),
+    headers: { Authorization: 'Bearer ' + process.env.MASKBREAK_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields)
+  });
+  return response.ok ? response.json() : null;
+}
+
+export async function POST(request) {
+  const body = (await request.json().catch(() => null)) || {};
+  const { token, fingerprintEventId, tz, email } = body; // collect()'s names
+  let result = null;
+  try {
+    if (token) result = await (sentinel ??= new Sentinel()).evaluate({ token, fingerprintEventId, email }); // reads MASKBREAK_API_KEY
+    else if (MODE !== 'enforce') result = await reportWithoutToken({ fingerprintEventId, tz, email });
+  } catch (err) {
+    console.log('[maskbreak] check unavailable:', err.message);
+  }
+  console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
+  if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
+    return Response.json({ error: 'Verification required' }, { status: result && result.decision === 'block' ? 403 : 409 });
+  }
+  return createAccount(body); // your existing signup logic
 }
 ```
 
@@ -160,7 +302,7 @@ const stripe = require('stripe')(process.env.STRIPE_KEY);
 const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 app.post('/checkout', async (req, res) => {
-  const result = await check({ token: req.body.token, fingerprintEventId: req.body.fingerprintEventId });
+  const result = await check(evidence(req.body));
   if (result && result.decision === 'block') return res.status(403).json({ error: 'declined' });
 
   const intent = await stripe.paymentIntents.create({ /* ... */ });
@@ -172,10 +314,9 @@ app.post('/checkout', async (req, res) => {
 
 ```js
 app.post('/auth/google', async (req, res) => {
-  const { credential, monocle, sentinel_fp } = req.body;
-  const ticket = await googleClient.verifyIdToken({ idToken: credential });
+  const ticket = await googleClient.verifyIdToken({ idToken: req.body.credential });
 
-  const result = await check({ token: monocle, fingerprintEventId: sentinel_fp });
+  const result = await check(evidence(req.body));
   if (result && result.decision === 'block') return res.status(403).json({ error: 'signup_blocked' });
 
   await createUser(ticket.getPayload().email, result?.device?.visitor_id);
