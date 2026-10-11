@@ -12,6 +12,16 @@
 
 const DEFAULT_ENDPOINT = 'https://maskbreak.com';
 
+// Sent on every request, as the Python and PHP SDKs send theirs
+// (sentinel-python/…, sentinel-php/…), so this SDK's calls are not just Node's
+// default "node". The version is read from package.json, which npm always
+// ships, rather than written here: a hand-written one drifted in the MCP
+// package. A runtime without require (a sandbox, an odd bundler) sends the
+// name alone.
+const USER_AGENT = (() => {
+    try { return `sentinel-node/${require('./package.json').version}`; } catch (_) { return 'sentinel-node'; }
+})();
+
 class SentinelError extends Error {
     constructor(message, { status, body } = {}) {
         super(message);
@@ -67,6 +77,7 @@ class Sentinel {
                 ...init,
                 headers: {
                     'Authorization': `Bearer ${this.apiKey}`,
+                    'User-Agent': USER_AGENT,
                     ...(init && init.headers)
                 },
                 signal: controller.signal

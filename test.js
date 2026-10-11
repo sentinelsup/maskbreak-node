@@ -102,6 +102,30 @@ test('evaluate passes email through; lookup hits GET /v1/lookup/{ip}', async () 
     assert.equal(seen[1].auth, 'Bearer sk_live_x');
 });
 
+test('every request names the SDK and its version in User-Agent, beside the key', async () => {
+    const original = global.fetch;
+    const seen = [];
+    global.fetch = async (url, init) => {
+        seen.push({ url, headers: init.headers });
+        return new Response(JSON.stringify({ decision: 'allow', verdict: 'allow' }), { status: 200 });
+    };
+    try {
+        const s = new Sentinel({ apiKey: 'k' });
+        await s.lookup('185.220.101.34');
+        await s.evaluate({ token: 'fixture' });
+    } finally {
+        global.fetch = original;
+    }
+    // Exactly the shipped version, so a stale or hand-written one fails.
+    const expected = `sentinel-node/${require('./package.json').version}`;
+    assert.equal(seen.length, 2);
+    for (const { url, headers } of seen) {
+        assert.equal(headers['User-Agent'], expected, url);
+        assert.equal(headers.Authorization, 'Bearer k', url);
+    }
+    assert.equal(seen[1].headers['Content-Type'], 'application/json');
+});
+
 test('exports SentinelError as named + static', () => {
     assert.ok(Sentinel.SentinelError);
     const err = new Sentinel.SentinelError('boom', { status: 429 });
