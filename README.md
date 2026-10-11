@@ -115,8 +115,9 @@ app.post('/signup', async (req, res, next) => {
 });
 ```
 
-**3. Submit your form once.** Deploy, open the page and submit the form. The
-first check then appears in the dashboard (Integration tab and Events).
+**3. Submit your form once.** Run your app where you can open the page, on
+your computer or on your site, and submit the form once. The first check then
+appears in the dashboard (Integration tab and Events).
 
 A form your JavaScript renders and submits (fetch, React, Next.js, Vue) sends
 `await window.Sentinel.collect()` with its data instead: see
@@ -140,7 +141,7 @@ Illustrative response. The VPN/proxy service name is returned only when known; o
   ip: '198.51.100.18',
   country: 'NL',
   network: {
-    vpn: true, proxy: false, datacenter: true, anonymous: true,
+    vpn: true, proxy: false, privacy_relay: false, datacenter: true, anonymous: true,
     tor: false, residential: false, service: 'PROTON_VPN'
   },
   device: {                    // when fingerprintEventId resolves to device data

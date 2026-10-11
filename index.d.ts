@@ -25,7 +25,12 @@ export interface DeviceIntel {
 
 export interface NetworkSignals {
     vpn: boolean;
+    /** Also true for Apple's iCloud Private Relay (see privacy_relay). */
     proxy: boolean;
+    /** True when the proxy is Apple's iCloud Private Relay (since 2026-10-10;
+     *  sent on every evaluation). On its own it is `review`, never `block`, with
+     *  the reason `privacy_relay` instead of `proxy_detected`. */
+    privacy_relay?: boolean;
     datacenter: boolean;
     anonymous: boolean;
     tor: boolean;
@@ -84,10 +89,10 @@ export interface DeviceSignals {
 }
 
 export type ReasonCode =
-    | 'vpn_detected' | 'proxy_detected' | 'datacenter_asn' | 'tor_exit_node'
+    | 'vpn_detected' | 'proxy_detected' | 'privacy_relay' | 'datacenter_asn' | 'tor_exit_node'
     | 'anonymous_network' | 'antidetect_browser' | 'automation_detected'
     | 'emulator_detected' | 'virtual_machine' | 'ip_blocklisted' | 'private_browsing'
-    | 'high_activity_device' | 'multi_account_device' | 'disposable_email';
+    | 'high_activity_device' | 'multi_account_device' | 'disposable_email' | 'timezone_mismatch';
 
 export interface EmailSignals {
     /** True when the address uses a disposable/burner domain */

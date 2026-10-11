@@ -182,9 +182,9 @@ module.exports.SentinelError = SentinelError;
  * @property {boolean} isSuspicious — legacy flag: true when VPN, proxy, Tor, antidetect, automation, emulator or virtual machine fired (not a datacenter or anonymous network alone); route on `decision`
  * @property {string|null} ip
  * @property {string|null} country — 2-letter country code
- * @property {object} network — { vpn, proxy, datacenter, anonymous, tor, residential, service }
+ * @property {object} network — { vpn, proxy, privacy_relay, datacenter, anonymous, tor, residential, service }; privacy_relay (since 2026-10-10) is true for Apple's iCloud Private Relay, which is review on its own
  * @property {object} [device] — { antidetect, automation, emulator, virtual_machine, incognito, visitor_id, tampering_score, ... } when fingerprintEventId was supplied
- * @property {string[]} reasons — machine-readable reason codes (vpn_detected, proxy_detected, ...)
+ * @property {string[]} reasons — machine-readable reason codes (vpn_detected, proxy_detected, privacy_relay, ...)
  * @property {number} evaluated_in_ms
  * @property {{disposable: boolean}} [email] — present when the optional email input was supplied
  * @property {'allow'|'review'|'block'} [engine_decision] — present when your own rules/exceptions changed `decision`
