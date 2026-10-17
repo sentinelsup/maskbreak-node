@@ -108,7 +108,8 @@ app.post('/signup', async (req, res, next) => {
     problem = err.message; // an uncaught rejection would end an Express 4 process
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result ? result.reasons : problem);
-  if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
+  // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
+  if (MODE === 'enforce' && (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result))) {
     return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
   }
   next(); // watch mode, or an allow: your existing handler runs
@@ -288,7 +289,8 @@ export async function POST(request) {
     console.log('[maskbreak] check unavailable:', err.message);
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
-  if (MODE === 'enforce' && (!result || result.decision !== 'allow')) {
+  // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
+  if (MODE === 'enforce' && (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result))) {
     return Response.json({ error: 'Verification required' }, { status: result && result.decision === 'block' ? 403 : 409 });
   }
   return createAccount(body); // your existing signup logic
@@ -304,7 +306,8 @@ const sentinel = new Sentinel({ apiKey: process.env.MASKBREAK_API_KEY });
 
 app.post('/checkout', async (req, res) => {
   const result = await check(evidence(req.body));
-  if (result && result.decision === 'block') return res.status(403).json({ error: 'declined' });
+  // A test or sample answer is never a real buyer's verdict: anyone can send a test token.
+  if (result && (result.decision === 'block' || Sentinel.isFixtureAnswer(result))) return res.status(403).json({ error: 'declined' });
 
   const intent = await stripe.paymentIntents.create({ /* ... */ });
   res.json({ clientSecret: intent.client_secret });
@@ -318,7 +321,7 @@ app.post('/auth/google', async (req, res) => {
   const ticket = await googleClient.verifyIdToken({ idToken: req.body.credential });
 
   const result = await check(evidence(req.body));
-  if (result && result.decision === 'block') return res.status(403).json({ error: 'signup_blocked' });
+  if (result && (result.decision === 'block' || Sentinel.isFixtureAnswer(result))) return res.status(403).json({ error: 'signup_blocked' });
 
   await createUser(ticket.getPayload().email, result?.device?.visitor_id);
 });
@@ -391,6 +394,8 @@ Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{
 ### `sentinel.shouldBlock({ token, fingerprintEventId? }, predicate?)`
 
 Convenience: runs `evaluate()` and returns a boolean; it throws `SentinelError` in the same cases (no token, API failure), so call it inside `try`/`catch`. Default predicate is `r => r.decision === 'block'` (honors your dashboard rules and allow/block pins). Pass your own to build custom policies.
+
+Since **0.4.0** a test, sandbox or sample answer (`test`, `sandbox` or `sample` is `true`) makes `shouldBlock()` return `true` whatever the predicate: the fixed test tokens are public, so a visitor whose real visit would be blocked could type `test_clean` into your form field. In your own test runs, create the client with `new Sentinel({ allowTestResults: true })`. `Sentinel.isFixtureAnswer(result)` tells you the same for a result you route yourself.
 
 > `accountId`, `email`, and `lookup()` require **v0.2.1 or later** (`npm install @sentinelsup/sdk@latest`) — the older 0.1.2 silently ignores `accountId`/`email`.
 

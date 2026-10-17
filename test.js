@@ -224,6 +224,35 @@ test('body stalls stay inside the request timeout', async () => {
     }
 });
 
+test('shouldBlock treats a test, sandbox or sample answer as a block unless the client allows test results', async () => {
+    const s = new Sentinel({ apiKey: 'k' });
+    for (const marker of ['test', 'sandbox', 'sample']) {
+        s.evaluate = async () => ({ decision: 'allow', [marker]: true });
+        assert.equal(await s.shouldBlock({ token: 'test_clean' }), true, marker + ': a public test token never lets a visitor through');
+        assert.equal(await s.shouldBlock({ token: 'test_clean' }, () => false), true, marker + ': whatever the predicate');
+    }
+    assert.equal(Sentinel.isFixtureAnswer({ decision: 'allow', test: true }), true);
+    assert.equal(Sentinel.isFixtureAnswer({ decision: 'allow' }), false);
+    assert.equal(Sentinel.isFixtureAnswer(null), false);
+    const ownTests = new Sentinel({ apiKey: 'k', allowTestResults: true });
+    ownTests.evaluate = async () => ({ decision: 'allow', test: true });
+    assert.equal(await ownTests.shouldBlock({ token: 'test_clean' }), false, 'opted in for its own test runs');
+});
+
+test('the API key is trimmed, a key with a line break or space inside is refused, and no error ever quotes it', async () => {
+    assert.equal(new Sentinel({ apiKey: '  sk_live_abc\n' }).apiKey, 'sk_live_abc');
+    withKeyEnv({ MASKBREAK_API_KEY: 'sk_live_fromfile\r\n' }, () => assert.equal(new Sentinel().apiKey, 'sk_live_fromfile'));
+    for (const bad of ['sk_live_a\nb', 'sk_live_a b', 'sk_live_a\u0000b']) {
+        assert.throws(() => new Sentinel({ apiKey: bad }), err => err instanceof Sentinel.SentinelError && !err.message.includes('sk_live_a'), JSON.stringify(bad));
+    }
+    const s = new Sentinel({ apiKey: 'sk_live_secret_value_123' });
+    const realFetch = global.fetch;
+    global.fetch = async () => { throw new TypeError('Headers.append: "Bearer sk_live_secret_value_123" is an invalid header value.'); };
+    try {
+        await assert.rejects(s.lookup('8.8.8.8'), err => !err.message.includes('sk_live_secret_value_123') && /\[api key\]/.test(err.message));
+    } finally { global.fetch = realFetch; }
+});
+
 test('shouldBlock respects final decisions, including allow pins and review', async () => {
     const s = new Sentinel({ apiKey: 'k' });
     for (const decision of ['allow', 'review', 'block']) {

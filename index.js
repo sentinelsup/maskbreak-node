@@ -54,13 +54,42 @@ class Sentinel {
      */
     constructor(opts = {}) {
         opts = opts || {};
-        const apiKey = (typeof opts.apiKey === 'string' && opts.apiKey) || apiKeyFromEnv();
+        // Trimmed (a key read from a file or a secret store often ends in a
+        // line break), and never echoed: a key with a space or control
+        // character inside made fetch throw an error quoting the whole
+        // Authorization header, which ended up in logs (0.4.0).
+        const apiKey = ((typeof opts.apiKey === 'string' && opts.apiKey) || apiKeyFromEnv()).trim();
         if (!apiKey) {
             throw new SentinelError('Sentinel: apiKey is required. Pass it explicitly or set MASKBREAK_API_KEY (the older SENTINEL_KEY still works). Get one free at https://maskbreak.com/signup');
+        }
+        if (/[\s\u0000-\u001f\u007f]/.test(apiKey)) {
+            throw new SentinelError('Sentinel: the API key contains a space, a line break or another control character. Copy it again from the dashboard (Settings, API keys).');
         }
         this.apiKey = apiKey;
         this.endpoint = (opts.endpoint || DEFAULT_ENDPOINT).replace(/\/$/, '');
         this.timeoutMs = opts.timeoutMs || 5000;
+        // Fixture answers (the fixed test_* tokens, the sandbox key, samples)
+        // describe a pretend visitor, not this one: shouldBlock() treats them
+        // as a block unless the caller's own test run says otherwise (0.4.0).
+        this.allowTestResults = opts.allowTestResults === true;
+    }
+
+    /**
+     * True for an answer that is not a verdict on a real visitor: a fixed test
+     * token, the public sandbox key or a sample. A visitor can type a test
+     * token into your form field, so production code must never treat such an
+     * answer as an allow.
+     * @param {EvaluateResult} result
+     * @returns {boolean}
+     */
+    static isFixtureAnswer(result) {
+        return !!(result && (result.test === true || result.sample === true || result.sandbox === true));
+    }
+
+    // An error message with the key taken out, whatever produced it.
+    _scrub(message) {
+        const text = String(message == null ? '' : message);
+        return this.apiKey ? text.split(this.apiKey).join('[api key]') : text;
     }
 
     /**
@@ -87,7 +116,7 @@ class Sentinel {
             if (err.name === 'AbortError') {
                 throw new SentinelError(`Sentinel: request timed out after ${this.timeoutMs}ms`);
             }
-            throw new SentinelError(`Sentinel: network error — ${err.message}`);
+            throw new SentinelError(`Sentinel: network error — ${this._scrub(err && err.message)}`);
         }
 
         // Body read stays under the abort timer too — otherwise a stalled
@@ -170,12 +199,18 @@ class Sentinel {
      * blocked 'review' traffic and ignored customer allow-pins.)
      * Pass a custom predicate to build your own policy.
      *
+     * A test, sandbox or sample answer always returns true (since 0.4.0):
+     * the fixed test tokens are public, and a visitor whose real visit would
+     * be blocked could type one into your form field. Construct the client
+     * with { allowTestResults: true } in your own test runs.
+     *
      * @param {object} input — same as evaluate()
      * @param {(r: EvaluateResult) => boolean} [predicate]
      * @returns {Promise<boolean>}
      */
     async shouldBlock(input, predicate) {
         const result = await this.evaluate(input);
+        if (!this.allowTestResults && Sentinel.isFixtureAnswer(result)) return true;
         return predicate ? !!predicate(result) : result.decision === 'block';
     }
 }

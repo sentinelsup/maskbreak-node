@@ -193,6 +193,10 @@ export interface SentinelOptions {
     endpoint?: string;
     /** Per-request timeout in ms (default: 5000) */
     timeoutMs?: number;
+    /** Let shouldBlock() treat test, sandbox and sample answers as a normal
+     *  decision (since 0.4.0 it returns true for them). Only for your own
+     *  test runs: the fixed test tokens are public, so a visitor can send one. */
+    allowTestResults?: boolean;
 }
 
 export interface EvaluateInput {
@@ -226,8 +230,13 @@ export default class Sentinel {
     /** Runs evaluate() and returns a boolean; throws SentinelError like evaluate()
      *  (no token, API failure). Default predicate (since 0.3.0):
      *  `r => r.decision === 'block'` — honors your dashboard rules and
-     *  allow/block pins. Pass your own predicate for custom policy. */
+     *  allow/block pins. Pass your own predicate for custom policy.
+     *  A test, sandbox or sample answer returns true whatever the predicate
+     *  (since 0.4.0), unless the client was made with allowTestResults. */
     shouldBlock(input: EvaluateInput, predicate?: (r: EvaluateResult) => boolean): Promise<boolean>;
+    /** True for a test-token, sandbox or sample answer: never a verdict on a
+     *  real visitor, so never a reason to let one through. */
+    static isFixtureAnswer(result: EvaluateResult | null | undefined): boolean;
 }
 
 export { Sentinel };
