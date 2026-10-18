@@ -92,7 +92,31 @@ export type ReasonCode =
     | 'vpn_detected' | 'proxy_detected' | 'privacy_relay' | 'datacenter_asn' | 'tor_exit_node'
     | 'anonymous_network' | 'antidetect_browser' | 'automation_detected'
     | 'emulator_detected' | 'virtual_machine' | 'ip_blocklisted' | 'private_browsing'
-    | 'high_activity_device' | 'multi_account_device' | 'disposable_email' | 'timezone_mismatch';
+    | 'high_activity_device' | 'multi_account_device' | 'disposable_email' | 'timezone_mismatch'
+    | 'account_new_device' | 'account_many_devices' | 'device_many_accounts' | 'ip_many_accounts';
+
+/** The account network (since 18 October 2026): present when you send
+ *  accountId with a live key. Scoped to your account only; shared exits
+ *  (VPN, proxy, datacenter, Tor, Apple's relay, mobile carriers) never link. */
+export interface AccountNetwork {
+    /** This accountId was checked before, within 90 days. */
+    seen_before: boolean;
+    first_seen: string | null;
+    /** Checked before on another device, never on this one (account_new_device). Null without device evidence. */
+    new_device: boolean | null;
+    /** Devices this account used in 24 h; 3+ adds account_many_devices. */
+    devices_24h: number;
+    devices_90d: number;
+    /** Your accounts on this device in 24 h, this one included; 3+ adds
+     *  device_many_accounts and raises allow to review. Null without device evidence. */
+    device_accounts_24h: number | null;
+    /** Your accounts from this address in 24 h; 3+ adds ip_many_accounts.
+     *  Null when no address was measured or it is a shared exit. */
+    ip_accounts_24h: number | null;
+    /** Your other accounts sharing a device or an address within 90 days. */
+    connected_accounts: number;
+    connected_by_device: number;
+}
 
 export interface EmailSignals {
     /** True when the address uses a disposable/burner domain */
@@ -114,6 +138,8 @@ export interface EvaluateResult {
     network: NetworkSignals;
     /** Present only when fingerprintEventId was supplied */
     device?: DeviceSignals;
+    /** Present when accountId was supplied with a live key (since 18 October 2026) */
+    account?: AccountNetwork;
     /** Machine-readable reason codes for the verdict */
     reasons: ReasonCode[];
     evaluated_in_ms: number;
@@ -204,8 +230,9 @@ export interface EvaluateInput {
     token: string;
     /** Optional device event id for device-layer signals */
     fingerprintEventId?: string;
-    /** Optional account/user id — enables multi-accounting detection
-     *  (device.linked_accounts / device.multi_account) */
+    /** Optional account/user id (your own internal ID, never an email) — enables
+     *  multi-accounting detection (device.linked_accounts / device.multi_account)
+     *  and the `account` object */
     accountId?: string;
     /** Optional signup email — adds `email.disposable` to the response
      *  (burner domains escalate allow → review). Checked transiently,

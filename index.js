@@ -152,7 +152,8 @@ class Sentinel {
      * @param {object} input
      * @param {string} input.token — Sentinel client-side token from the frontend SDK
      * @param {string} [input.fingerprintEventId] — optional device event id for device signals
-     * @param {string} [input.accountId] — optional account/user id for multi-accounting detection
+     * @param {string} [input.accountId] — optional account/user id (from your server-side session, never a form
+     *   field): multi-accounting detection and, with a live key, the `account` object (account network)
      * @param {string} [input.email] — optional signup email; adds `email.disposable` to the
      *   response (burner domains escalate allow → review). Checked transiently, never stored.
      * @returns {Promise<EvaluateResult>}
@@ -233,6 +234,7 @@ module.exports.SentinelError = SentinelError;
  * @property {string[]} reasons — machine-readable reason codes (vpn_detected, proxy_detected, privacy_relay, ...)
  * @property {number} evaluated_in_ms
  * @property {{disposable: boolean}} [email] — present when the optional email input was supplied
+ * @property {object} [account] — the account network (since 2026-10-18): present when accountId was sent with a live key; { seen_before, first_seen, new_device, devices_24h, devices_90d, device_accounts_24h, ip_accounts_24h, connected_accounts, connected_by_device }
  * @property {'allow'|'review'|'block'} [engine_decision] — present when your own rules/exceptions changed `decision`
  * @property {'rules'|'exception'} [decision_source] — who authored the final decision when it was not the engine
  * @property {string[]} [rule_matched] — signals that triggered a custom rule
