@@ -44,6 +44,103 @@ function apiKeyFromEnv() {
     return '';
 }
 
+// evaluate() sends a field only when it is given: undefined, null and ''
+// stay out of the request.
+const given = value => value !== undefined && value !== null && value !== '';
+
+// The values `event` takes (login protection, since 23 October 2026). The API
+// reads the name case-insensitively and ignores any other value without a
+// word, so a typo such as "signin" would run the check without login
+// protection: evaluate() refuses it instead (0.5.0).
+const EVENTS = ['login', 'signup', 'password_change', 'verification', 'logout', 'account_change'];
+// Account events a server reports on its own, often with no page in front of
+// it: the API records them without the visit's network token. A login and a
+// signup are visits and still need the token.
+const TOKENLESS_EVENTS = ['password_change', 'verification', 'logout', 'account_change'];
+// Fields with a fixed list of values: the list, and what the API does with
+// any other value (the reason evaluate() refuses it).
+const CHOICES = {
+    event: [EVENTS, 'the API ignores any other value, and the check would run without login protection'],
+    reason: [['user', 'forgot', 'forced'], 'the API reads any other value as user'],
+    verificationType: [['email', 'sms', 'phone_call', 'app', 'push', 'security_key', 'captcha'], 'the API ignores any other value'],
+    verifiedEvent: [['login', 'signup', 'password_change', 'account_change'], 'the API ignores any other value']
+};
+// The API reads only a real boolean here (or the text "true"/"false" from a
+// form body); anything else silently becomes "not known".
+const BOOLEANS = ['loginSucceeded', 'succeeded'];
+// The API reads these only when they are strings.
+const STRINGS = ['tz', 'phone', 'userAgent', 'ip'];
+// The API drops a longer session ID without a word (the device then stands in
+// for the session).
+const MAX_SESSION_ID = 256;
+
+// The request body for POST /v1/evaluate, and whether this call is one of the
+// account events that may go without the network token. Throws SentinelError
+// for a value the API would ignore or misread; nothing is sent then.
+function evaluateBody(input) {
+    const picked = {};
+    for (const [name, [allowed, otherwise]] of Object.entries(CHOICES)) {
+        if (!given(input[name])) continue;
+        const value = typeof input[name] === 'string' ? input[name].trim().toLowerCase() : null;
+        if (!allowed.includes(value)) {
+            throw new SentinelError(`Sentinel.evaluate: ${name} must be one of ${allowed.join(', ')}; ${otherwise}.`);
+        }
+        picked[name] = value;
+    }
+    const accountEvent = TOKENLESS_EVENTS.includes(picked.event);
+    const { token } = input;
+    if (!given(token) && !accountEvent) {
+        throw new SentinelError('Sentinel.evaluate: token (client-side Sentinel token) is required (only the account events password_change, verification, logout and account_change can be sent without it)');
+    }
+    if (given(token) && typeof token !== 'string') {
+        throw new SentinelError('Sentinel.evaluate: token (client-side Sentinel token) must be a string');
+    }
+    const body = {};
+    if (given(token)) body.token = token;
+    for (const name of ['fingerprintEventId', 'accountId', 'email']) {
+        if (given(input[name])) body[name] = input[name];
+    }
+    for (const name of STRINGS) {
+        if (!given(input[name])) continue;
+        if (typeof input[name] !== 'string') throw new SentinelError(`Sentinel.evaluate: ${name} must be a string.`);
+        body[name] = input[name];
+    }
+    if (picked.event) body.event = picked.event;
+    for (const name of BOOLEANS) {
+        if (!given(input[name])) continue;
+        if (typeof input[name] !== 'boolean') throw new SentinelError(`Sentinel.evaluate: ${name} must be true or false.`);
+        body[name] = input[name];
+    }
+    if (given(input.sessionId)) {
+        const id = input.sessionId;
+        if (!(typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id))) || String(id).trim().length > MAX_SESSION_ID) {
+            throw new SentinelError(`Sentinel.evaluate: sessionId must be a string or a number of at most ${MAX_SESSION_ID} characters; for a longer session value, send a shorter ID for the session (a hash of it, for example).`);
+        }
+        body.sessionId = id;
+    }
+    for (const name of ['reason', 'verificationType', 'verifiedEvent']) {
+        if (picked[name]) body[name] = picked[name];
+    }
+    return { body, accountEvent };
+}
+
+// The fixed test tokens (test_clean, test_vpn, ...) describe a pretend visitor
+// and never carry a browser part; a terminal test needs no warning about it.
+const isTestToken = token => typeof token === 'string' && token.startsWith('test_');
+
+// Checks that arrive without the browser part (the dashboard's
+// missing_device) are a broken integration that is easy to miss. Said once
+// per process, never with the key or anything about the visitor.
+const MISSING_BROWSER_PART_WARNING = 'Sentinel: a check was sent without fingerprintEventId, so Maskbreak checks it without the browser part (bots, fake browsers and emulators go unchecked): keep the script on the page with your form and forward its sentinel_fp field (or the fingerprintEventId from Sentinel.collect()) as fingerprintEventId. Shown once per process; new Sentinel({ warnMissingBrowserPart: false }) turns it off.';
+let warnedMissingBrowserPart = false;
+function warnMissingBrowserPartOnce() {
+    if (warnedMissingBrowserPart) return;
+    warnedMissingBrowserPart = true;
+    try {
+        if (typeof console !== 'undefined' && console && typeof console.warn === 'function') console.warn(MISSING_BROWSER_PART_WARNING);
+    } catch (_) { /* a warning never fails a check */ }
+}
+
 class Sentinel {
     /**
      * @param {object} [opts]
@@ -51,6 +148,10 @@ class Sentinel {
      *   Falls back to the MASKBREAK_API_KEY env var, then SENTINEL_KEY, then SENTINEL_API_KEY.
      * @param {string} [opts.endpoint] — override the default API base URL (for testing)
      * @param {number} [opts.timeoutMs=5000] — per-request timeout
+     * @param {boolean} [opts.allowTestResults=false] — only for your own test runs: let shouldBlock()
+     *   treat test, sandbox and sample answers as a normal decision
+     * @param {boolean} [opts.warnMissingBrowserPart=true] — false turns off the one-time console
+     *   warning for a check sent without fingerprintEventId (0.5.0)
      */
     constructor(opts = {}) {
         opts = opts || {};
@@ -72,6 +173,9 @@ class Sentinel {
         // describe a pretend visitor, not this one: shouldBlock() treats them
         // as a block unless the caller's own test run says otherwise (0.4.0).
         this.allowTestResults = opts.allowTestResults === true;
+        // A check sent without fingerprintEventId gets one console warning per
+        // process (0.5.0); false turns it off.
+        this.warnMissingBrowserPart = opts.warnMissingBrowserPart !== false;
     }
 
     /**
@@ -149,23 +253,55 @@ class Sentinel {
     /**
      * Evaluate a visitor session for fraud signals.
      *
+     * Every field but `token` is optional and sent only when given (not
+     * undefined, null or ''). A value the API would ignore or misread (an
+     * unknown `event`, a non-boolean `loginSucceeded`, ...) throws a
+     * SentinelError before anything is sent.
+     *
      * @param {object} input
-     * @param {string} input.token — Sentinel client-side token from the frontend SDK
+     * @param {string} [input.token] — Sentinel client-side token from the frontend SDK. Required, except
+     *   for the account events password_change, verification, logout and account_change (0.5.0)
      * @param {string} [input.fingerprintEventId] — optional device event id for device signals
-     * @param {string} [input.accountId] — optional account/user id (from your server-side session, never a form
-     *   field): multi-accounting detection and, with a live key, the `account` object (account network)
+     * @param {string|number} [input.accountId] — optional account/user id (from your server-side session, never a form
+     *   field): multi-accounting detection and, with a live key, the `account` object (account network).
+     *   Login protection needs it with `event`.
      * @param {string} [input.email] — optional signup email; adds `email.disposable` to the
-     *   response (burner domains escalate allow → review). Checked transiently, never stored.
+     *   response (burner domains escalate allow → review). With email and phone intelligence on,
+     *   also `email.checked`, `score`, `risk` and `signals`. Never stored or logged.
+     * @param {string} [input.tz] — the visitor's IANA time zone (`tz` from Sentinel.collect(), or the
+     *   form's sentinel_tz field); adds `timezone` when recognised (0.5.0)
+     * @param {string} [input.phone] — the visitor's phone number in international format; with email and
+     *   phone intelligence on, adds the `phone` object with a score (0.5.0)
+     * @param {'login'|'signup'|'password_change'|'verification'|'logout'|'account_change'} [input.event] —
+     *   login protection (0.5.0): 'login' adds `account_takeover`, the others `account_event`
+     * @param {boolean} [input.loginSucceeded] — with event 'login': whether the credential was right
+     * @param {boolean} [input.succeeded] — with event 'password_change' or 'verification': whether it
+     *   succeeded (absent = pending)
+     * @param {string|number} [input.sessionId] — with an event: your own session ID (at most 256 characters;
+     *   only a keyed hash of it leaves Maskbreak)
+     * @param {string} [input.userAgent] — with an event: the visitor's User-Agent header as your server received it
+     * @param {string} [input.ip] — with an event: the visitor's address as your server saw it (used only when the
+     *   network token gave none)
+     * @param {'user'|'forgot'|'forced'} [input.reason] — with event 'password_change'
+     * @param {'email'|'sms'|'phone_call'|'app'|'push'|'security_key'|'captcha'} [input.verificationType] —
+     *   with event 'verification'
+     * @param {'login'|'signup'|'password_change'|'account_change'} [input.verifiedEvent] — with event
+     *   'verification': which action it verified
      * @returns {Promise<EvaluateResult>}
      */
-    async evaluate({ token, fingerprintEventId, accountId, email } = {}) {
-        if (!token || typeof token !== 'string') {
-            throw new SentinelError('Sentinel.evaluate: token (client-side Sentinel token) is required');
+    async evaluate(input = {}) {
+        input = input || {};
+        const { body, accountEvent } = evaluateBody(input);
+        // Account events may come from server code with no page in front of
+        // them; anything else that lacks the browser part is a broken
+        // integration, and says so once.
+        if (this.warnMissingBrowserPart && !accountEvent && !given(input.fingerprintEventId) && !isTestToken(input.token)) {
+            warnMissingBrowserPartOnce();
         }
         const result = await this._request('/v1/evaluate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, fingerprintEventId, accountId, email })
+            body: JSON.stringify(body)
         });
         if (!['allow', 'review', 'block'].includes(result.decision)) {
             throw new SentinelError('Sentinel.evaluate: invalid decision in API response', { body: result });
@@ -190,6 +326,19 @@ class Sentinel {
             throw new SentinelError('Sentinel.lookup: ip (public IPv4 or IPv6 address) is required');
         }
         return this._request(`/v1/lookup/${encodeURIComponent(ip.trim())}`, { method: 'GET' });
+    }
+
+    /**
+     * Whether your integration's checks arrive complete, and what to fix next
+     * (GET /v1/setup, since 0.5.0). Submit your form once, then call it: it
+     * says whether that check arrived with both parts and, when not, what to
+     * change. Works with the live key and the test key. The answer is returned
+     * as the API sends it.
+     *
+     * @returns {Promise<SetupStatus>}
+     */
+    async setupStatus() {
+        return this._request('/v1/setup', { method: 'GET' });
     }
 
     /**
@@ -233,8 +382,15 @@ module.exports.SentinelError = SentinelError;
  * @property {object} [device] — { antidetect, automation, emulator, virtual_machine, incognito, visitor_id, tampering_score, ... } when fingerprintEventId was supplied
  * @property {string[]} reasons — machine-readable reason codes (vpn_detected, proxy_detected, privacy_relay, ...)
  * @property {number} evaluated_in_ms
- * @property {{disposable: boolean}} [email] — present when the optional email input was supplied
+ * @property {EmailSignals} [email] — present when the optional email input was supplied
  * @property {object} [account] — the account network (since 2026-10-18): present when accountId was sent with a live key; { seen_before, first_seen, new_device, devices_24h, devices_90d, device_accounts_24h, ip_accounts_24h, connected_accounts, connected_by_device }
+ * @property {AccountTakeover} [account_takeover] — login protection: present when event was 'login' (0.5.0)
+ * @property {AccountEvent} [account_event] — login protection: present when event was another account event (0.5.0)
+ * @property {PhoneIntelligence} [phone] — email and phone intelligence: present when phone was sent (0.5.0)
+ * @property {TimezoneSignal} [timezone] — present when a recognised tz was sent and the address's country is known (0.5.0)
+ * @property {boolean} [degraded] — true when the network part was unavailable (no or an unreadable token)
+ * @property {boolean} [sandbox] — true when the public sk_test_sandbox key answered
+ * @property {boolean} [sample] — true on GET /v1/evaluate/sample answers
  * @property {'allow'|'review'|'block'} [engine_decision] — present when your own rules/exceptions changed `decision`
  * @property {'rules'|'exception'} [decision_source] — who authored the final decision when it was not the engine
  * @property {string[]} [rule_matched] — signals that triggered a custom rule
@@ -244,6 +400,76 @@ module.exports.SentinelError = SentinelError;
  * @property {{network_age_s?: number, device_age_s?: number, device_replayed?: boolean}} [evidence] — how fresh the evidence was (known fields only)
  * @property {EvaluateDetails} details — legacy network signals (backwards compatibility)
  * @property {DeviceIntel|null} [deviceIntel] — legacy device signals (backwards compatibility)
+ */
+
+/**
+ * @typedef {object} EmailSignals
+ * @property {boolean} disposable — the address uses a disposable/burner domain
+ * @property {boolean} [checked] — email and phone intelligence: true when the address was scored
+ * @property {number|null} [score] — 0–100, higher is riskier (when checked); null when no score came back
+ * @property {'low'|'medium'|'high'|null} [risk] — low below 50, medium 50–79, high 80 and up
+ * @property {string[]} [signals] — what the score noticed, by name (the list can grow)
+ * @property {number|null} [online_accounts]
+ * @property {number|null} [breaches]
+ * @property {boolean|null} [deliverable]
+ * @property {boolean|null} [free_provider]
+ * @property {string|null} [domain_created] — a date, YYYY-MM-DD
+ * @property {'not_enabled'|'not_available'|'quota'|'invalid'|'test'|'busy'|'unavailable'} [why] — when checked is false
+ */
+
+/**
+ * @typedef {object} PhoneIntelligence
+ * @property {boolean} checked — true when the number was scored
+ * @property {number|null} [score] — 0–100, higher is riskier (when checked); null when no score came back
+ * @property {'low'|'medium'|'high'|null} [risk] — low below 50, medium 50–79, high 80 and up
+ * @property {string[]} [signals] — what the score noticed, by name (the list can grow)
+ * @property {boolean|null} [valid]
+ * @property {string|null} [line_type] — mobile, fixed_line, voip, ...
+ * @property {string|null} [carrier]
+ * @property {string|null} [country] — 2-letter country code of the number
+ * @property {boolean|null} [disposable]
+ * @property {number|null} [online_accounts]
+ * @property {'not_enabled'|'not_available'|'quota'|'invalid'|'test'|'busy'|'unavailable'} [why] — when checked is false
+ */
+
+/**
+ * @typedef {object} AccountTakeover
+ * @property {boolean} checked — true when the login was scored
+ * @property {number} [score] — 0–100, higher is riskier; 80 and up adds account_takeover_risk and raises allow to review, never to block
+ * @property {'low'|'medium'|'high'} [risk]
+ * @property {string[]} [signals] — what the score noticed, by name (the list can grow)
+ * @property {'not_enabled'|'not_available'|'no_account_id'|'test'|'busy'|'unavailable'} [why] — when checked is false
+ */
+
+/**
+ * @typedef {object} AccountEvent
+ * @property {'signup'|'password_change'|'verification'|'logout'|'account_change'} event
+ * @property {boolean} recorded — true when login protection took the event (no score comes back for these)
+ * @property {'not_enabled'|'not_available'|'no_account_id'|'test'|'busy'|'unavailable'} [why] — when recorded is false
+ */
+
+/**
+ * @typedef {object} TimezoneSignal
+ * @property {string} reported — the IANA zone that was sent
+ * @property {string} country — the country that zone belongs to
+ * @property {boolean} matches_ip — the zone's country equals the address's country
+ * @property {boolean} checked — false on a VPN, proxy, Tor or datacenter exit, where a mismatch is expected
+ */
+
+/**
+ * @typedef {object} SetupStatus
+ * @property {'waiting'|'complete'|'missing_network'|'network_unavailable'|'missing_device'|'device_unavailable'|'test_mode'|'test_complete'|'ip_restricted'|'rate_limited'|'request_failed'} status — what the latest check showed
+ * @property {boolean} complete — at least one complete live-key check ever
+ * @property {string} message — what the latest check showed, in words
+ * @property {string|null} next_step — what to do next, or null
+ * @property {string|null} last_check_at — ISO time of the latest check
+ * @property {number} complete_checks
+ * @property {string|null} last_complete_at — ISO time of the latest complete check
+ * @property {{confirmed: boolean, origin: string|null}} website
+ * @property {{origin: string, at: string}|null} script_seen — where and when the page script last reported in
+ * @property {string|null} site_id
+ * @property {'live'|'test'} key_type — which key made this call
+ * @property {string} docs — a link to the setup guide
  */
 
 /**
@@ -271,6 +497,7 @@ module.exports.SentinelError = SentinelError;
  * @property {boolean} anon
  * @property {boolean} [crawler]
  * @property {string} [service]
+ * @property {boolean} [tor] — present only when the Tor exit list matched; read network.tor
  */
 
 /**
@@ -285,4 +512,7 @@ module.exports.SentinelError = SentinelError;
  * @property {boolean} incognito
  * @property {boolean} virtualMachine
  * @property {boolean} emulator
+ * @property {number} [tamperingScore]
+ * @property {boolean} [privacySettings]
+ * @property {boolean} [highActivity]
  */

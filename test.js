@@ -332,3 +332,248 @@ test('signup example passes device evidence and does not count missing/shared IP
     assert.equal(inputs.at(-1).fingerprintEventId, 'event');
     assert.equal(vm.runInContext('signupsByVisitor.size', context), 0);
 });
+
+// ── 0.5.0: the fields login protection, email and phone intelligence and the
+// time zone read; account events without a token; the missing-browser-part
+// warning; setupStatus(). ────────────────────────────────────────────────────
+
+// Record what evaluate() would send, answering with `answer`.
+async function sent(input, opts = {}, answer = { decision: 'allow' }) {
+    const original = global.fetch;
+    const calls = [];
+    global.fetch = async (url, init) => {
+        calls.push({ url, init, body: init.body === undefined ? undefined : JSON.parse(init.body) });
+        return new Response(JSON.stringify(answer), { status: 200 });
+    };
+    try {
+        const s = new Sentinel({ apiKey: 'sk_live_fields', warnMissingBrowserPart: false, ...opts });
+        const result = await s.evaluate(input);
+        return { calls, result };
+    } finally {
+        global.fetch = original;
+    }
+}
+
+test('evaluate sends each new field under its API name, and only when given', async () => {
+    const full = {
+        token: 'tok', fingerprintEventId: 'evt', accountId: 'u_42', email: 'a@example.com',
+        tz: 'Europe/Tallinn', phone: '+44 20 7946 0958', event: 'login', loginSucceeded: true,
+        succeeded: false, sessionId: 'sess_1', userAgent: 'Mozilla/5.0 (X11)', ip: '81.20.33.4',
+        reason: 'forgot', verificationType: 'sms', verifiedEvent: 'login'
+    };
+    const { calls } = await sent(full);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://maskbreak.com/v1/evaluate');
+    assert.deepEqual(calls[0].body, full, 'every field under the API\'s own JSON name');
+    // Nothing given: the token alone; undefined, null and '' stay out.
+    const bare = await sent({ token: 'tok', fingerprintEventId: 'evt', tz: undefined, phone: null, event: '', sessionId: '', userAgent: undefined, loginSucceeded: '', succeeded: null });
+    assert.deepEqual(bare.calls[0].body, { token: 'tok', fingerprintEventId: 'evt' });
+    // A false boolean is an answer, so it is sent; a numeric session or account ID too.
+    const failed = await sent({ token: 'tok', fingerprintEventId: 'evt', event: 'login', accountId: 0, loginSucceeded: false, sessionId: 7 });
+    assert.deepEqual(failed.calls[0].body, { token: 'tok', fingerprintEventId: 'evt', accountId: 0, event: 'login', loginSucceeded: false, sessionId: 7 });
+});
+
+test('the fixed-list fields are read like the API reads them, and sent in its spelling', async () => {
+    const { calls } = await sent({ token: 'tok', fingerprintEventId: 'evt', event: ' Password_Change ', reason: 'FORGOT', verificationType: 'Security_Key', verifiedEvent: 'SignUp' });
+    assert.deepEqual(calls[0].body, { token: 'tok', fingerprintEventId: 'evt', event: 'password_change', reason: 'forgot', verificationType: 'security_key', verifiedEvent: 'signup' });
+});
+
+test('a value the API would ignore or misread is refused before anything is sent', async () => {
+    const original = global.fetch;
+    let calls = 0;
+    global.fetch = async () => { calls++; return new Response('{"decision":"allow"}', { status: 200 }); };
+    try {
+        const s = new Sentinel({ apiKey: 'sk_live_refuse', warnMissingBrowserPart: false });
+        const cases = [
+            [{ event: 'signin' }, /event must be one of login, signup, password_change, verification, logout, account_change; the API ignores any other value/],
+            [{ event: 42 }, /event must be one of/],
+            [{ event: 'login', reason: 'expired' }, /reason must be one of user, forgot, forced; the API reads any other value as user/],
+            [{ event: 'verification', verificationType: 'totp' }, /verificationType must be one of email, sms, phone_call, app, push, security_key, captcha/],
+            [{ event: 'verification', verifiedEvent: 'checkout' }, /verifiedEvent must be one of login, signup, password_change, account_change/],
+            [{ event: 'login', loginSucceeded: 'true' }, /loginSucceeded must be true or false/],
+            [{ event: 'password_change', succeeded: 1 }, /succeeded must be true or false/],
+            [{ tz: 3 }, /tz must be a string/],
+            [{ phone: 4420794609 }, /phone must be a string/],
+            [{ event: 'login', userAgent: ['Mozilla'] }, /userAgent must be a string/],
+            [{ event: 'login', ip: { v4: '81.20.33.4' } }, /ip must be a string/],
+            [{ event: 'login', sessionId: 'x'.repeat(257) }, /sessionId must be a string or a number of at most 256 characters/],
+            [{ event: 'login', sessionId: { id: 1 } }, /sessionId must be/],
+            [{ event: 'login', sessionId: Infinity }, /sessionId must be/]
+        ];
+        for (const [extra, message] of cases) {
+            await assert.rejects(s.evaluate({ token: 'tok', fingerprintEventId: 'evt', ...extra }), err => {
+                assert.ok(err instanceof Sentinel.SentinelError, JSON.stringify(extra));
+                assert.match(err.message, message, JSON.stringify(extra));
+                return true;
+            });
+        }
+        // 256 characters is still fine.
+        await s.evaluate({ token: 'tok', fingerprintEventId: 'evt', event: 'login', sessionId: 'x'.repeat(256) });
+        assert.equal(calls, 1, 'only the valid call reached the API');
+    } finally {
+        global.fetch = original;
+    }
+});
+
+test('the four account events go without a token; a login, a signup and a plain check still need one', async () => {
+    for (const event of ['password_change', 'verification', 'logout', 'account_change']) {
+        const { calls } = await sent({ event, accountId: 'u_42' });
+        assert.deepEqual(calls[0].body, { accountId: 'u_42', event }, event + ': sent without token');
+        // A token given anyway still goes along.
+        assert.deepEqual((await sent({ event, accountId: 'u_42', token: 'tok' })).calls[0].body, { token: 'tok', accountId: 'u_42', event });
+        // A token given but not a string is still refused.
+        await assert.rejects(sent({ event, accountId: 'u_42', token: 12345 }), /token \(client-side Sentinel token\) must be a string/);
+    }
+    const original = global.fetch;
+    let calls = 0;
+    global.fetch = async () => { calls++; return new Response('{"decision":"allow"}', { status: 200 }); };
+    try {
+        const s = new Sentinel({ apiKey: 'sk_live_tokens', warnMissingBrowserPart: false });
+        for (const input of [{ event: 'login', accountId: 'u' }, { event: 'signup', accountId: 'u' }, {}, { accountId: 'u' }, { event: 'login', token: '' }]) {
+            await assert.rejects(s.evaluate(input), /token \(client-side Sentinel token\) is required \(only the account events password_change, verification, logout and account_change can be sent without it\)/, JSON.stringify(input));
+        }
+        await assert.rejects(s.shouldBlock({ event: 'signup' }), /token/);
+        assert.equal(calls, 0);
+    } finally {
+        global.fetch = original;
+    }
+});
+
+test('the new answer objects come back as the API sends them', async () => {
+    const answer = {
+        decision: 'review', reasons: ['account_takeover_risk', 'phone_high_risk'], degraded: true,
+        account_takeover: { checked: true, score: 91, risk: 'high', signals: ['new_location'] },
+        email: { disposable: false, checked: false, why: 'quota' },
+        phone: { checked: true, score: 89, risk: 'high', signals: ['invalid'], carrier: null },
+        timezone: { reported: 'Europe/Tallinn', country: 'EE', matches_ip: true, checked: true }
+    };
+    const { result } = await sent({ token: 'tok', fingerprintEventId: 'evt', event: 'login', accountId: 'u' }, {}, answer);
+    assert.deepEqual(result, answer);
+    const recorded = await sent({ event: 'logout', accountId: 'u' }, {}, { decision: 'allow', degraded: true, account_event: { event: 'logout', recorded: true } });
+    assert.deepEqual(recorded.result.account_event, { event: 'logout', recorded: true });
+});
+
+// A fresh copy of the module: the warning is once per process, so each case
+// starts from a module that has not warned yet.
+function freshSentinel() {
+    delete require.cache[require.resolve('./index.js')];
+    try { return require('./index.js'); } finally { delete require.cache[require.resolve('./index.js')]; }
+}
+
+async function warningsFrom(run) {
+    const original = { fetch: global.fetch, warn: console.warn };
+    const warnings = [];
+    global.fetch = async () => new Response('{"decision":"allow"}', { status: 200 });
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+        await run(freshSentinel());
+    } finally {
+        global.fetch = original.fetch;
+        console.warn = original.warn;
+    }
+    return warnings;
+}
+
+test('a check without fingerprintEventId warns once per process, without the key, and the option turns it off', async () => {
+    const key = 'sk_live_warning_secret_987';
+    const once = await warningsFrom(async Fresh => {
+        const s = new Fresh({ apiKey: key });
+        await s.evaluate({ token: 'eyJ.live.token', email: 'visitor@example.com', ip: '81.20.33.4' });
+        await s.evaluate({ token: 'eyJ.live.token' });
+        await new Fresh({ apiKey: key }).evaluate({ token: 'eyJ.live.token', fingerprintEventId: '' });
+    });
+    assert.equal(once.length, 1, 'one warning, however many checks and clients');
+    assert.match(once[0], /sent without fingerprintEventId/);
+    assert.match(once[0], /keep the script on the page with your form and forward its sentinel_fp field \(or the fingerprintEventId from Sentinel\.collect\(\)\) as fingerprintEventId/);
+    assert.match(once[0], /new Sentinel\(\{ warnMissingBrowserPart: false \}\) turns it off/);
+    for (const secret of [key, 'eyJ.live.token', 'visitor@example.com', '81.20.33.4']) assert.ok(!once[0].includes(secret), 'the warning never carries ' + secret);
+
+    const off = await warningsFrom(async Fresh => {
+        await new Fresh({ apiKey: key, warnMissingBrowserPart: false }).evaluate({ token: 'eyJ.live.token' });
+    });
+    assert.deepEqual(off, [], 'warnMissingBrowserPart: false');
+
+    const quiet = await warningsFrom(async Fresh => {
+        const s = new Fresh({ apiKey: key });
+        await s.evaluate({ token: 'eyJ.live.token', fingerprintEventId: 'evt' });            // the browser part is there
+        await s.evaluate({ token: 'test_vpn' });                                             // a fixed test token
+        for (const event of ['password_change', 'verification', 'logout', 'account_change']) {
+            await s.evaluate({ event, accountId: 'u' });                                     // account events, no page
+        }
+        await assert.rejects(s.evaluate({ event: 'login' }), /token/);                       // refused before sending
+    });
+    assert.deepEqual(quiet, []);
+
+    // Off for one client does not use up the warning for another.
+    const mixed = await warningsFrom(async Fresh => {
+        await new Fresh({ apiKey: key, warnMissingBrowserPart: false }).evaluate({ token: 'eyJ.live.token' });
+        await new Fresh({ apiKey: key }).evaluate({ token: 'eyJ.live.token', event: 'login', accountId: 'u' });
+    });
+    assert.equal(mixed.length, 1);
+});
+
+test('a runtime without console still sends the check', async () => {
+    const vm = require('node:vm');
+    const fs = require('node:fs');
+    const mod = { exports: {} };
+    const bodies = [];
+    vm.runInNewContext(fs.readFileSync(`${__dirname}/index.js`, 'utf8'), {
+        module: mod, AbortController, setTimeout, clearTimeout,
+        fetch: async (_url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ decision: 'allow' }) }; }
+    });
+    await new mod.exports({ apiKey: 'k' }).evaluate({ token: 'tok' });
+    assert.deepEqual(bodies, [{ token: 'tok' }]);
+});
+
+test('setupStatus GETs /v1/setup with the key and returns the answer as is', async () => {
+    const http = require('node:http');
+    const seen = [];
+    const answer = {
+        status: 'missing_device', complete: false, message: 'A check arrived, but the browser part is missing.',
+        next_step: 'Send sentinel_fp as fingerprintEventId.', last_check_at: '2026-10-27T10:00:00.000Z',
+        complete_checks: 0, last_complete_at: null, website: { confirmed: false, origin: null },
+        script_seen: { origin: 'https://shop.example', at: '2026-10-27T09:59:00.000Z' }, site_id: 'site_0123456789abcdef',
+        key_type: 'live', docs: 'https://maskbreak.com/integrate.md', future_field: 1
+    };
+    const srv = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, ua: req.headers['user-agent'], type: req.headers['content-type'], body });
+            res.setHeader('Content-Type', 'application/json');
+            if (req.headers.authorization !== 'Bearer sk_live_setup') { res.statusCode = 401; return res.end('{"error":"Invalid API Key."}'); }
+            res.end(JSON.stringify(answer));
+        });
+    });
+    await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+    try {
+        const endpoint = `http://127.0.0.1:${srv.address().port}`;
+        assert.deepEqual(await new Sentinel({ apiKey: 'sk_live_setup', endpoint }).setupStatus(), answer);
+        await assert.rejects(new Sentinel({ apiKey: 'sk_live_other', endpoint }).setupStatus(), err => {
+            assert.equal(err.status, 401);
+            assert.deepEqual(err.body, { error: 'Invalid API Key.' });
+            return true;
+        });
+    } finally {
+        srv.close();
+    }
+    assert.equal(seen[0].method, 'GET');
+    assert.equal(seen[0].url, '/v1/setup');
+    assert.equal(seen[0].auth, 'Bearer sk_live_setup');
+    assert.equal(seen[0].ua, `sentinel-node/${require('./package.json').version}`);
+    assert.equal(seen[0].type, undefined, 'a GET sends no body type');
+    assert.equal(seen[0].body, '');
+});
+
+test('the package, its lockfile and its types agree on 0.5.0', () => {
+    const fs = require('node:fs');
+    assert.equal(require('./package.json').version, '0.5.0');
+    const lock = require('./package-lock.json');
+    assert.equal(lock.version, '0.5.0');
+    assert.equal(lock.packages[''].version, '0.5.0');
+    const types = fs.readFileSync(`${__dirname}/index.d.ts`, 'utf8');
+    for (const name of ['setupStatus(): Promise<SetupStatus>', 'warnMissingBrowserPart?: boolean', 'account_takeover?: AccountTakeover',
+        'account_event?: AccountEvent', 'phone?: PhoneIntelligence', 'timezone?: TimezoneSignal', 'interface AccountEventInput']) {
+        assert.ok(types.includes(name), name);
+    }
+});

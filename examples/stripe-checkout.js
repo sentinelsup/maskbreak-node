@@ -1,5 +1,5 @@
 /**
- * Block card testing before it hits Stripe.
+ * Block card testing before it hits Stripe (Pre-Intent Defense Pattern).
  *
  *   npm install express stripe @sentinelsup/sdk
  *
@@ -37,7 +37,7 @@ app.post('/checkout', async (req, res) => {
     } catch (err) {
         // This checkout example pauses on unavailable checks; choose and document
         // your own retry/review policy instead of treating failures as approval.
-        console.error('[sentinel] evaluate failed', err.message);
+        console.error('[maskbreak] evaluate failed', err.message);
         return res.status(503).json({ error: 'Payment verification unavailable. Try again.' });
     }
 
@@ -46,4 +46,6 @@ app.post('/checkout', async (req, res) => {
     res.json({ clientSecret: intent.client_secret });
 });
 
-app.listen(3000, () => console.log('Stripe + Sentinel demo on :3000'));
+app.listen(3000, () => console.log('Stripe + Maskbreak demo on :3000'));
+
+
