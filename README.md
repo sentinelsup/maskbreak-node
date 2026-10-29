@@ -433,8 +433,8 @@ if (result?.email?.disposable) {
 ### Look up an arbitrary IP — no browser token needed
 
 ```js
-// Batch scoring, log enrichment, server-side screening. Same key,
-// same hourly quota as evaluate().
+// Batch scoring, log enrichment, server-side screening. Same key;
+// its own monthly allowance (10x your checks).
 const info = await sentinel.lookup('185.220.101.34');
 // info.verdict     → 'allow' | 'review' | 'block'
 // info.risk_score  → 0–100
@@ -674,7 +674,7 @@ it. `new Sentinel({ warnMissingBrowserPart: false })` turns it off.
 
 ### `sentinel.lookup(ip)`
 
-Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Shares the hourly quota with `evaluate()` (one per account for the live keys; the test key has its own) and has its own monthly allowance.
+Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Has its own monthly allowance, 10× the plan's checks.
 
 ### `sentinel.setupStatus()`
 
@@ -704,11 +704,11 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 
 ## Rate limits
 
-Visitor checks (`evaluate()`) are counted per calendar month in UTC, with an hourly cap: **Free — 10,000 a month, up to 1,000 an hour, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 10× the plan's checks (100,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. The quick start lets the action through on that answer and logs it, in enforce mode too, so running out never takes your form offline.
+Visitor checks (`evaluate()`) are counted per calendar month in UTC, with no hourly cap: **Free — 10,000 a month, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 10× the plan's checks (100,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. The quick start lets the action through on that answer and logs it, in enforce mode too, so running out never takes your form offline.
 
 On `503` with `.body.code === 'storage_unavailable'`, the key could not be checked at that moment (not an invalid key; `401` is): retry later and apply your outage policy meanwhile.
 
-On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After` or `X-RateLimit-*`, use raw HTTP and read those headers from the response. Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest accounts have no hourly or monthly cap and are exempt from the per-address request ceiling; `/v1/usage` and invalid-key protection keep their own limits.
+On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After`, use raw HTTP and read that header from the response (the `X-RateLimit-*` headers are not sent since 29 October 2026: no account has an hourly limit). Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest accounts have no monthly allowance and are exempt from the per-address request ceiling; `/v1/usage` and invalid-key protection keep their own limits.
 
 `evaluate()` requires a non-empty token, except for the account events `password_change`, `verification`, `logout` and `account_change` (since 0.5.0). Raw HTTP accepts a missing or empty token for any check, as a degraded evaluation: use the [HTTP reference](https://maskbreak.com/api#evaluate) for that path, as the quick start's watch mode does. Missing network evidence does not prove a visitor is safe.
 
