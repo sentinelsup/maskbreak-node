@@ -506,8 +506,8 @@ export default class Sentinel {
     /** Look up an arbitrary public IP address (GET /v1/lookup/{ip}).
      *  Limited to public cloud-range/Tor evidence; unknown does not mean safe.
      *  Use evaluate() with a browser token for VPN/proxy evidence.
-     *  Shares the hourly quota with evaluate() (one per account for the live
-     *  keys; the test key has its own) and has its own monthly allowance. */
+     *  Has its own monthly allowance, 10x the plan's checks (no plan has an
+     *  hourly limit since 2026-10-29). */
     lookup(ip: string): Promise<LookupResponse>;
     /** GET /v1/setup (since 0.5.0): after you submit your form once, whether that check
      *  arrived complete and what to fix. The answer is returned as the API sends it. */
