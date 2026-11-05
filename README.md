@@ -112,7 +112,8 @@ app.post('/signup', async (req, res, next) => {
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result ? result.reasons : problem);
   // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
-  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result))) {
+  // A degraded answer is one the network check could not run for: no verdict either.
+  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
     return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
   }
   next(); // watch mode, or an allow: your existing handler runs
@@ -136,6 +137,25 @@ Get a free API key (no credit card) at [maskbreak.com/signup](https://maskbreak.
 Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the environment; the older `SENTINEL_KEY` and `SENTINEL_API_KEY` names are still read as fallbacks.
 
 ## What's new
+
+### 0.5.2
+
+- A `token` that is only whitespace (a space, a tab, a line break, U+00A0,
+  U+FEFF) counts as missing: `evaluate()` and `shouldBlock()` throw, as for no
+  token, and nothing is sent. The API reads such a token as no token and
+  answers a degraded allow, so a visitor who typed a space into the token field
+  turned the refusal of a missing token into an allow. A real token is sent
+  unchanged.
+- The enforce-mode examples (the quick start, the Next.js route, the checkout
+  and login gate, the login example and `examples/auth-flood-guard.js`) hold a
+  degraded answer (`degraded: true`), as [integrate.md](https://maskbreak.com/integrate.md)
+  does: it had no network check.
+- The docs say that the answer's legacy `isSuspicious` flag is no gate: a
+  visitor can send a public test token such as `test_clean`, and that answer
+  carries `isSuspicious: false`. Route on `decision` with
+  `Sentinel.isFixtureAnswer(result)`, or use `shouldBlock()`, which counts a
+  test, sandbox or sample answer as blocked whatever the predicate (since
+  0.4.0). The answer itself is unchanged.
 
 ### 0.5.0 (2026-10-27)
 
@@ -165,7 +185,7 @@ Illustrative response. The VPN/proxy service name is returned only when known; o
 {
   decision: 'review',          // 'allow' | 'review' | 'block' — route on this
   risk_score: 65,              // 0–100
-  isSuspicious: true,          // legacy flag; route on decision instead
+  isSuspicious: true,          // legacy flag, false on a test_clean answer; route on decision instead
   ip: '198.51.100.18',
   country: 'NL',
   network: {
@@ -324,7 +344,8 @@ export async function POST(request) {
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
   // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
-  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result))) {
+  // A degraded answer is one the network check could not run for: no verdict either.
+  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
     return Response.json({ error: 'Verification required' }, { status: result && result.decision === 'block' ? 403 : 409 });
   }
   return createAccount(body); // your existing signup logic
@@ -336,15 +357,17 @@ export async function POST(request) {
 Check before `stripe.paymentIntents.create()` and before the password hash
 runs. Scripted card testing and credential stuffing often send no browser
 token at all, so this gate does not wave such a request through: in enforce
-mode only a real `allow` goes on.
+mode only a real `allow` goes on, never a degraded one (`degraded: true`, the
+answer to a check the network part could not run for).
 
 ```js
 const stripe = require('stripe')(process.env.STRIPE_KEY);
 const MODE = process.env.MASKBREAK_MODE || 'watch';
 
 // Watch (the default) logs and always continues. Enforce holds everything but
-// a real allow: no token, no answer, review, block or a test answer (anyone
-// can send a test token). A used-up month continues, logged, until the 1st.
+// a real allow: no token, no answer, review, block, a degraded answer (no
+// network check) or a test answer (anyone can send a test token). A used-up
+// month continues, logged, until the 1st.
 async function gate(body) {
   const input = evidence(body);
   let result = null, monthUsedUp = false;
@@ -356,7 +379,7 @@ async function gate(body) {
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
   if (MODE !== 'enforce' || monthUsedUp) return null;
-  if (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result)) {
+  if (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result)) {
     return result && result.decision === 'block' ? 403 : 409; // 409: your verification flow
   }
   return null;
@@ -383,7 +406,14 @@ app.post('/api/login', async (req, res, next) => {
 A visitor who passes still confirms the payment with the client secret and
 can try another card on the same intent: keep Stripe Radar and your own
 attempt limits. To link devices to accounts, pass your own user id as
-`accountId` (from your database, never the email or another form field).
+`accountId` (from your database, never the email or another form field). On a
+login route this gate runs before the password is checked, so leave
+`accountId` off it: put it on a check made after the credential was accepted,
+or on the [login check](#a-login) with `event: 'login'` and `loginSucceeded`.
+Since 5 November 2026 a check with `event` `login`, `verification` or
+`password_change` whose `loginSucceeded` (or `succeeded`) is not `true` counts
+as a sign-in attempt in the `account` object, not as that account's own use; a
+check without `event` counts as its own use.
 
 ### Signup — block fake Google sign-ins
 
@@ -482,8 +512,8 @@ app.post('/login', async (req, res) => {
   if (!passwordOk) return res.status(401).json({ error: 'Wrong email or password.' });
   if (MODE === 'enforce' && !monthUsedUp) {
     if (result && result.decision === 'block') return res.status(403).json({ error: 'Sign-in unavailable.' });
-    // Review, no answer or a test answer: a second factor, not a refusal.
-    if (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result)) return sendSecondFactor(res, user);
+    // Review, no answer, a degraded or a test answer: a second factor, not a refusal.
+    if (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result)) return sendSecondFactor(res, user);
   }
   return signIn(res, user); // your existing session code
 });
@@ -506,6 +536,11 @@ app.post('/login', async (req, res) => {
   `accountId`. Its score learns from the logins of every Maskbreak customer who
   uses login protection; say so in your own privacy notice. A login counts as
   a normal check.
+- The `account` object (the account network) reads a login whose
+  `loginSucceeded` is not `true` as an attempt, since 5 November 2026: it
+  counts in `device_accounts_24h` and `ip_accounts_24h`, never in that
+  account's own devices, addresses or connected accounts. Send
+  `loginSucceeded` with every login check.
 
 ### A signup with email and phone
 
@@ -600,7 +635,9 @@ sent: an `event` other than `login`, `signup`, `password_change`,
 outside its list, a `loginSucceeded` or `succeeded` that is not `true` or
 `false`, a `tz`, `phone`, `userAgent` or `ip` that is not a string, and a
 `sessionId` that is not a string or a number or is longer than 256 characters.
-A field that is `undefined`, `null` or `''` is left out of the request.
+A field that is `undefined`, `null` or `''` is left out of the request. A
+`token` that is only whitespace (a space, a tab, a line break, U+00A0, U+FEFF)
+counts as missing, as the API reads it (since 0.5.2).
 
 ## Check your setup
 
@@ -615,7 +652,7 @@ if (setup.next_step) console.log('Next:', setup.next_step);
 
 | Field | What it says |
 |---|---|
-| `status` | What the latest check showed: `waiting` (no check in the last 7 days, and none complete before), `complete` (both parts, live key), `missing_network` (no network token), `network_unavailable` (a token that could not be read), `missing_device` (no browser event id), `device_unavailable` (a browser event that could not be verified), `test_mode` (a test token, or the test key without both parts), `test_complete` (the test key with both parts: swap in the live key), `ip_restricted`, `rate_limited` or `request_failed` |
+| `status` | What the latest check showed: `waiting` (no check in the last 7 days, and none complete before), `complete` (both parts, live key), `missing_network` (no network token), `network_unavailable` (a token that could not be read), `missing_device` (no browser event id), `device_unavailable` (a browser event that could not be verified), `test_mode` (a test token, or the test key without both parts), `test_complete` (the test key with both parts: swap in the live key), `ip_restricted`, `rate_limited` (an hourly limit; no account has one since 29 October 2026), `monthly_quota_exceeded` (this month's checks are used up: `next_step` links to the plan that raises the allowance) or `request_failed` |
 | `complete` | At least one complete live-key check has arrived |
 | `message` / `next_step` | What the latest check showed, and what to do next (`null` when nothing is left) |
 | `last_check_at`, `complete_checks`, `last_complete_at` | When the latest check arrived, how many complete ones did, and when the latest of those did |
@@ -640,7 +677,7 @@ API sends it.
 
 ### `sentinel.evaluate(input)`
 
-Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing or empty (except for the four account events below), for a value the API would ignore or misread ([Refused before sending](#refused-before-sending)), and on network/API failure — an API error carries `.status` and `.body`.
+Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing, empty or only whitespace (except for the four account events below), for a value the API would ignore or misread ([Refused before sending](#refused-before-sending)), and on network/API failure — an API error carries `.status` and `.body`.
 
 | Field | Sent as | Notes |
 |---|---|---|
@@ -660,7 +697,7 @@ Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing or empt
 | `verifiedEvent` | `verifiedEvent` | With `verification`: `login`, `signup`, `password_change` or `account_change` |
 
 - `fingerprintEventId` — requests device signals (tampering, automation, emulator, …). When the device is identified, `device.times_seen`, `device.first_seen` and `device.returning` describe its retained sightings across Maskbreak, not just your account. These records are pruned after 90 days of inactivity; `first_seen` is not necessarily the device's lifetime first visit.
-- `accountId` — your own user id for this session (take it from your server-side session, never from a form field); with an identified device, enables customer-scoped account linking (`device.linked_accounts` / `device.multi_account`). With a live key the response also carries the `account` object (the account network, since 18 October 2026): devices this account used in 24 hours and 90 days, your accounts on this device and on this address in 24 hours, `new_device` for a returning account, and how many of your other accounts it shares a device or an address with. Its reasons `account_new_device`, `account_many_devices` and `ip_many_accounts` inform only; `device_many_accounts` (3+ of your accounts on one device within 24 hours) raises an allow to review. Links are keyed hashes and never cross customers; the account network also keeps your accountId encrypted so your console can show which accounts are linked. Both are pruned 90 days after last use.
+- `accountId` — your own user id for this session (take it from your server-side session, never from a form field); with an identified device, enables customer-scoped account linking (`device.linked_accounts` / `device.multi_account`). With a live key the response also carries the `account` object (the account network, since 18 October 2026): devices this account used in 24 hours and 90 days, your accounts on this device and on this address in 24 hours, `new_device` for a returning account, and how many of your other accounts it shares a device or an address with. Its reasons `account_new_device`, `account_many_devices` and `ip_many_accounts` inform only; `device_many_accounts` (3+ of your accounts on one device within 24 hours) raises an allow to review. Links are keyed hashes and never cross customers; the account network also keeps your accountId encrypted so your console can show which accounts are linked. Both are pruned 90 days after last use. At sign-in, send it once the credential was accepted, or with `event: 'login'` and `loginSucceeded`: since 5 November 2026 a check with `event` `login`, `verification` or `password_change` whose `loginSucceeded` (or `succeeded`) is not `true` counts as a sign-in attempt, which adds nothing to the account's own devices or addresses.
 - New `device.customer_history` reports distinct verified events, first/latest visit and associated account counts **only for your customer account** over a rolling 90-day window. Fresh live-key events start this history; test keys and duplicate event submissions do not add to it. Derive `accountId` from your backend's authenticated session, never a browser-claimed account ID. Shared devices are not automatically fraud. Legacy fields above retain their meanings.
 - An optional, default-off [GPU evidence beta](https://maskbreak.com/api#device-history) is available over raw HTTP with explicit browser collection. Published SDK versions may omit `gpuEvidence`; use the documented HTTP flow. It does not change fraud decisions or automatically link devices.
 - `email` — adds `email.disposable` to the response; burner domains escalate `allow` to `review`. With email and phone intelligence on (the default for accounts created from 23 October 2026), `email` also carries the provider's `checked`, `score`, `risk` and `signals`, and each address scored uses one of the plan's daily email-and-phone checks.
@@ -710,7 +747,7 @@ On `503` with `.body.code === 'storage_unavailable'`, the key could not be check
 
 On `429`, the thrown `SentinelError` has `.status === 429`. This SDK exposes status and body, not HTTP response headers. If your integration needs `Retry-After`, use raw HTTP and read that header from the response (the `X-RateLimit-*` headers are not sent since 29 October 2026: no account has an hourly limit). Use bounded backoff and an endpoint-specific fallback; an unavailable check is not an allow verdict. Approved public-interest accounts have no monthly allowance and are exempt from the per-address request ceiling; `/v1/usage` and invalid-key protection keep their own limits.
 
-`evaluate()` requires a non-empty token, except for the account events `password_change`, `verification`, `logout` and `account_change` (since 0.5.0). Raw HTTP accepts a missing or empty token for any check, as a degraded evaluation: use the [HTTP reference](https://maskbreak.com/api#evaluate) for that path, as the quick start's watch mode does. Missing network evidence does not prove a visitor is safe.
+`evaluate()` requires a token that is not empty or only whitespace, except for the account events `password_change`, `verification`, `logout` and `account_change` (since 0.5.0). Raw HTTP accepts a missing or empty token for any check, as a degraded evaluation: use the [HTTP reference](https://maskbreak.com/api#evaluate) for that path, as the quick start's watch mode does. Missing network evidence does not prove a visitor is safe.
 
 ## Development checks
 

@@ -48,6 +48,14 @@ function apiKeyFromEnv() {
 // stay out of the request.
 const given = value => value !== undefined && value !== null && value !== '';
 
+// POST /v1/evaluate reads a token that is blank after String.prototype.trim()
+// (a space, a tab, a line break, U+00A0, U+FEFF, ...) as no token at all and
+// answers it with the degraded allow it gives a missing one. Such a token is
+// missing here too (0.5.2): the visitor chooses that field's value, and a space
+// must not turn the refusal of a missing token into an allow. A real token is
+// sent unchanged.
+const blankToken = value => typeof value === 'string' && value.trim() === '';
+
 // The values `event` takes (login protection, since 23 October 2026). The API
 // reads the name case-insensitively and ignores any other value without a
 // word, so a typo such as "signin" would run the check without login
@@ -88,7 +96,7 @@ function evaluateBody(input) {
         picked[name] = value;
     }
     const accountEvent = TOKENLESS_EVENTS.includes(picked.event);
-    const { token } = input;
+    const token = blankToken(input.token) ? undefined : input.token;
     if (!given(token) && !accountEvent) {
         throw new SentinelError('Sentinel.evaluate: token (client-side Sentinel token) is required (only the account events password_change, verification, logout and account_change can be sent without it)');
     }
@@ -256,11 +264,13 @@ class Sentinel {
      * Every field but `token` is optional and sent only when given (not
      * undefined, null or ''). A value the API would ignore or misread (an
      * unknown `event`, a non-boolean `loginSucceeded`, ...) throws a
-     * SentinelError before anything is sent.
+     * SentinelError before anything is sent. A token that is only whitespace
+     * counts as missing, as the API reads it (0.5.2).
      *
      * @param {object} input
      * @param {string} [input.token] — Sentinel client-side token from the frontend SDK. Required, except
-     *   for the account events password_change, verification, logout and account_change (0.5.0)
+     *   for the account events password_change, verification, logout and account_change (0.5.0); a
+     *   token that is only whitespace counts as missing (0.5.2)
      * @param {string} [input.fingerprintEventId] — optional device event id for device signals
      * @param {string|number} [input.accountId] — optional account/user id (from your server-side session, never a form
      *   field): multi-accounting detection and, with a live key, the `account` object (account network).
@@ -375,7 +385,7 @@ module.exports.SentinelError = SentinelError;
  * @typedef {object} EvaluateResult
  * @property {'allow'|'review'|'block'} decision — route on this
  * @property {number} risk_score — 0–100 weighted risk score
- * @property {boolean} isSuspicious — legacy flag: true when VPN, proxy, Tor, antidetect, automation, emulator or virtual machine fired (not a datacenter or anonymous network alone); route on `decision`
+ * @property {boolean} isSuspicious — legacy flag: true when VPN, proxy, Tor, antidetect, automation, emulator or virtual machine fired (not a datacenter or anonymous network alone); false on the answer to the public test_clean token, so route on `decision` with Sentinel.isFixtureAnswer(), or use shouldBlock()
  * @property {string|null} ip
  * @property {string|null} country — 2-letter country code
  * @property {object} network — { vpn, proxy, privacy_relay, datacenter, anonymous, tor, residential, service }; privacy_relay (since 2026-10-10) is true for Apple's iCloud Private Relay, which is review on its own
@@ -458,7 +468,7 @@ module.exports.SentinelError = SentinelError;
 
 /**
  * @typedef {object} SetupStatus
- * @property {'waiting'|'complete'|'missing_network'|'network_unavailable'|'missing_device'|'device_unavailable'|'test_mode'|'test_complete'|'ip_restricted'|'rate_limited'|'request_failed'} status — what the latest check showed
+ * @property {'waiting'|'complete'|'missing_network'|'network_unavailable'|'missing_device'|'device_unavailable'|'test_mode'|'test_complete'|'ip_restricted'|'rate_limited'|'monthly_quota_exceeded'|'request_failed'} status — what the latest check showed
  * @property {boolean} complete — at least one complete live-key check ever
  * @property {string} message — what the latest check showed, in words
  * @property {string|null} next_step — what to do next, or null

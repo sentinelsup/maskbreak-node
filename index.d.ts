@@ -278,7 +278,9 @@ export interface EvaluateResult {
     /** Legacy convenience flag: true when VPN, proxy, Tor, antidetect, automation,
      *  emulator or virtual machine fired. A datacenter or anonymous network alone does
      *  not set it, and email, timezone, rules and pins never change it — route on
-     *  `decision` instead. */
+     *  `decision` instead. It is no gate on its own: a visitor can send the public
+     *  test_clean token, whose answer carries false. Check Sentinel.isFixtureAnswer()
+     *  too, or use shouldBlock(). */
     isSuspicious: boolean;
     ip: string | null;
     country: string | null;
@@ -399,7 +401,8 @@ export type TokenlessEvent = 'password_change' | 'verification' | 'logout' | 'ac
  *  or ''). A value the API would ignore or misread (an unknown event, a non-boolean
  *  loginSucceeded, ...) throws a SentinelError before anything is sent. */
 export interface EvaluateInput {
-    /** Client-side Sentinel token from the frontend SDK */
+    /** Client-side Sentinel token from the frontend SDK. A token that is only whitespace
+     *  counts as missing, as the API reads it (since 0.5.2). */
     token: string;
     /** Optional device event id for device-layer signals. Without it the check has no
      *  browser part, and the SDK warns once (see warnMissingBrowserPart). */
@@ -461,12 +464,13 @@ export interface AccountEventInput extends Omit<EvaluateInput, 'token' | 'event'
  *  device_unavailable (a browser event that could not be verified), test_mode (a test
  *  token, or the test key without both parts), test_complete (the test key with both
  *  parts: swap in the live key), ip_restricted (refused by your allowed server
- *  addresses), rate_limited (refused by the hourly or monthly limit), request_failed
- *  (the call failed, for example an invalid token). */
+ *  addresses), rate_limited (refused by an hourly limit; no account has one since
+ *  2026-10-29), monthly_quota_exceeded (this month's checks are used up, since
+ *  2026-10-27), request_failed (the call failed, for example an invalid token). */
 export type SetupStatusCode =
     | 'waiting' | 'complete' | 'missing_network' | 'network_unavailable' | 'missing_device'
     | 'device_unavailable' | 'test_mode' | 'test_complete' | 'ip_restricted' | 'rate_limited'
-    | 'request_failed';
+    | 'monthly_quota_exceeded' | 'request_failed';
 
 /** GET /v1/setup (since 0.5.0): whether your checks arrive complete, and what to fix. */
 export interface SetupStatus {
@@ -499,9 +503,9 @@ export class SentinelError extends Error {
 
 export default class Sentinel {
     constructor(opts?: SentinelOptions);
-    /** Throws SentinelError without a token (except for the four account events in
-     *  AccountEventInput), for a value the API would ignore or misread, and when the
-     *  API fails. */
+    /** Throws SentinelError without a token, or with one that is only whitespace (except
+     *  for the four account events in AccountEventInput), for a value the API would
+     *  ignore or misread, and when the API fails. */
     evaluate(input: EvaluateInput | AccountEventInput): Promise<EvaluateResult>;
     /** Look up an arbitrary public IP address (GET /v1/lookup/{ip}).
      *  Limited to public cloud-range/Tor evidence; unknown does not mean safe.

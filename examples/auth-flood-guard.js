@@ -35,8 +35,9 @@ app.post('/api/login', async (req, res) => {
     // Never log the email, password or tokens.
     console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result ? result.reasons : '');
     // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
+    // A degraded answer is one the network check could not run for: no verdict either.
     if (MODE === 'enforce' && !monthUsedUp &&
-        (!result || result.decision !== 'allow' || Sentinel.isFixtureAnswer(result))) {
+        (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
         // 409: send the person to your verification step (an email code, a second factor).
         return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required.' });
     }

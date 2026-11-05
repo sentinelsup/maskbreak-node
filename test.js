@@ -439,6 +439,35 @@ test('the four account events go without a token; a login, a signup and a plain 
     }
 });
 
+// 0.5.2: POST /v1/evaluate reads a token that is blank after trim() as no
+// token and answers a degraded allow; a visitor who sent a space turned the
+// refusal of a missing token into that allow.
+test('a token that is only whitespace counts as missing; a real token is sent unchanged', async () => {
+    const blanks = [' ', '\t\n', '\u00a0', '\ufeff', '\u2028', '\u3000', ' \u00a0\t\ufeff\r\n\v\f\u1680\u2000\u200a\u202f\u205f '];
+    const original = global.fetch;
+    let calls = 0;
+    global.fetch = async () => { calls++; return new Response('{"decision":"allow","degraded":true}', { status: 200 }); };
+    try {
+        const s = new Sentinel({ apiKey: 'sk_live_blank', warnMissingBrowserPart: false });
+        for (const token of blanks) {
+            assert.equal(token.trim(), '', JSON.stringify(token) + ' is blank to the API');
+            await assert.rejects(s.evaluate({ token, fingerprintEventId: 'evt' }), /token \(client-side Sentinel token\) is required/, JSON.stringify(token));
+            await assert.rejects(s.evaluate({ token, event: 'login', accountId: 'u' }), /token \(client-side Sentinel token\) is required/, JSON.stringify(token));
+            await assert.rejects(s.shouldBlock({ token }), /token \(client-side Sentinel token\) is required/, JSON.stringify(token));
+        }
+        assert.equal(calls, 0, 'nothing reached the API');
+    } finally {
+        global.fetch = original;
+    }
+    // An account event may go without the token: a blank one is left out, as none.
+    assert.deepEqual((await sent({ event: 'logout', accountId: 'u_42', token: ' \u00a0' })).calls[0].body, { accountId: 'u_42', event: 'logout' });
+    // A token the API reads as a token goes as given: padded, or a character trim() keeps.
+    for (const token of [' tok ', '\u200b', '\u180e', '\u0085', '\u001c']) {
+        assert.notEqual(token.trim(), '');
+        assert.equal((await sent({ token, fingerprintEventId: 'evt' })).calls[0].body.token, token, JSON.stringify(token));
+    }
+});
+
 test('the new answer objects come back as the API sends them', async () => {
     const answer = {
         decision: 'review', reasons: ['account_takeover_risk', 'phone_high_risk'], degraded: true,
@@ -565,12 +594,12 @@ test('setupStatus GETs /v1/setup with the key and returns the answer as is', asy
     assert.equal(seen[0].body, '');
 });
 
-test('the package, its lockfile and its types agree on 0.5.1', () => {
+test('the package, its lockfile and its types agree on 0.5.2', () => {
     const fs = require('node:fs');
-    assert.equal(require('./package.json').version, '0.5.1');
+    assert.equal(require('./package.json').version, '0.5.2');
     const lock = require('./package-lock.json');
-    assert.equal(lock.version, '0.5.1');
-    assert.equal(lock.packages[''].version, '0.5.1');
+    assert.equal(lock.version, '0.5.2');
+    assert.equal(lock.packages[''].version, '0.5.2');
     const types = fs.readFileSync(`${__dirname}/index.d.ts`, 'utf8');
     for (const name of ['setupStatus(): Promise<SetupStatus>', 'warnMissingBrowserPart?: boolean', 'account_takeover?: AccountTakeover',
         'account_event?: AccountEvent', 'phone?: PhoneIntelligence', 'timezone?: TimezoneSignal', 'interface AccountEventInput']) {
