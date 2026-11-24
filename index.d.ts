@@ -29,7 +29,7 @@ export interface DeviceIntel {
     highActivity?: boolean;
 }
 
-export interface NetworkSignals {
+export interface NetworkSignals extends Pick<LookupNetwork, 'risk_tags' | 'service_tags'> {
     vpn: boolean;
     /** Also true for Apple's iCloud Private Relay (see privacy_relay). */
     proxy: boolean;

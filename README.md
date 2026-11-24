@@ -138,6 +138,12 @@ Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the 
 
 ## What's new
 
+### 0.5.4
+
+Visit responses type the optional `network.risk_tags` and `network.service_tags`
+arrays. A missing field means that the address source supplied no reading.
+An empty risk array means it reported no tags.
+
 ### 0.5.3
 
 The TypeScript response types now include optional AI observations on visit checks
