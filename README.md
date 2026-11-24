@@ -138,6 +138,13 @@ Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the 
 
 ## What's new
 
+### 0.5.3
+
+The TypeScript response types now include optional AI observations on visit checks
+(`network.ai_agentic`, `network.ai_crawling`, `network.ai_operator`) and optional
+arrays of IP lookup tags (`network.risk_tags`, `network.service_tags`).
+The API omits fields when the source did not report them.
+
 ### 0.5.2
 
 - A `token` that is only whitespace (a space, a tab, a line break, U+00A0,
@@ -464,7 +471,7 @@ if (result?.email?.disposable) {
 
 ```js
 // Batch scoring, log enrichment, server-side screening. Same key;
-// its own monthly allowance (10x your checks).
+// its own monthly allowance (30x your checks).
 const info = await sentinel.lookup('185.220.101.34');
 // info.verdict     → 'allow' | 'review' | 'block'
 // info.risk_score  → 0–100
@@ -566,8 +573,8 @@ console.log('[maskbreak]', result?.decision, result?.email, result?.phone, resul
 - Email and phone intelligence is on by default for accounts created from 23
   October 2026; an older account switches it on in Settings, and any account
   can switch it off there. Each address or number scored uses one of the
-  plan's daily email-and-phone checks: Free 3, Starter 20, Growth 50, Scale
-  150 a day.
+  plan's daily email-and-phone checks: Free 9, Starter 60, Growth 150, Scale
+  450 a day.
 - `checked: false` comes with `why`: `not_enabled`, `quota` (the day's checks
   are used up), `invalid`, `test`, `busy`, `unavailable` or `not_available`;
   `invalid`, `busy` and `unavailable` use no daily check. Treat it as no
@@ -711,7 +718,7 @@ it. `new Sentinel({ warnMissingBrowserPart: false })` turns it off.
 
 ### `sentinel.lookup(ip)`
 
-Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Has its own monthly allowance, 10× the plan's checks.
+Returns `LookupResponse` for a public IPv4/IPv6 address (wraps `GET /v1/lookup/{ip}`): a verdict, risk score and limited public-feed evidence from cloud-hosting ranges and Tor exit lists. Legacy VPN/proxy fields do not establish complete coverage. Use `evaluate()` with a browser SDK token for VPN/proxy evidence and service naming when known. `known: false`, false signals or an `allow` verdict are **not** a safety guarantee. Network metadata may be null. Has its own monthly allowance, 30× the plan's checks.
 
 ### `sentinel.setupStatus()`
 
@@ -741,7 +748,7 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 
 ## Rate limits
 
-Visitor checks (`evaluate()`) are counted per calendar month in UTC, with no hourly cap: **Free — 10,000 a month, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 10× the plan's checks (100,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. The quick start lets the action through on that answer and logs it, in enforce mode too, so running out never takes your form offline.
+Visitor checks (`evaluate()`) are counted per calendar month in UTC, with no hourly cap: **Free — 10,000 a month, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 30× the plan's checks (300,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. The quick start lets the action through on that answer and logs it, in enforce mode too, so running out never takes your form offline.
 
 On `503` with `.body.code === 'storage_unavailable'`, the key could not be checked at that moment (not an invalid key; `401` is): retry later and apply your outage policy meanwhile.
 

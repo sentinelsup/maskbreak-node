@@ -43,6 +43,11 @@ export interface NetworkSignals {
     residential: boolean;
     /** VPN/proxy service name when known; otherwise null. */
     service: string | null;
+    /** AI agent or crawler activity observed on the source IP, when measured. */
+    ai_agentic?: boolean;
+    ai_crawling?: boolean;
+    /** AI operator observed on the source IP, when known. */
+    ai_operator?: string;
     /** False for a partial network reading (higher chance of a wrong answer)
      *  or when there was no reading. Informational; never changes `decision`. */
     complete?: boolean;
@@ -345,6 +350,10 @@ export interface LookupSignals {
 }
 
 export interface LookupNetwork {
+    /** Observations about this IP. Absent when the source did not supply them. */
+    risk_tags?: string[];
+    /** Tunnel operators or proxy services observed behind this address. */
+    service_tags?: string[];
     asn: number | null;
     org: string | null;
     country: string | null;
@@ -510,7 +519,7 @@ export default class Sentinel {
     /** Look up an arbitrary public IP address (GET /v1/lookup/{ip}).
      *  Limited to public cloud-range/Tor evidence; unknown does not mean safe.
      *  Use evaluate() with a browser token for VPN/proxy evidence.
-     *  Has its own monthly allowance, 10x the plan's checks (no plan has an
+     *  Has its own monthly allowance, 30x the plan's checks (no plan has an
      *  hourly limit since 2026-10-29). */
     lookup(ip: string): Promise<LookupResponse>;
     /** GET /v1/setup (since 0.5.0): after you submit your form once, whether that check

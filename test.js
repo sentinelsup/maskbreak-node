@@ -594,15 +594,16 @@ test('setupStatus GETs /v1/setup with the key and returns the answer as is', asy
     assert.equal(seen[0].body, '');
 });
 
-test('the package, its lockfile and its types agree on 0.5.2', () => {
+test('the package, its lockfile and its types agree on 0.5.3', () => {
     const fs = require('node:fs');
-    assert.equal(require('./package.json').version, '0.5.2');
+    assert.equal(require('./package.json').version, '0.5.3');
     const lock = require('./package-lock.json');
-    assert.equal(lock.version, '0.5.2');
-    assert.equal(lock.packages[''].version, '0.5.2');
+    assert.equal(lock.version, '0.5.3');
+    assert.equal(lock.packages[''].version, '0.5.3');
     const types = fs.readFileSync(`${__dirname}/index.d.ts`, 'utf8');
     for (const name of ['setupStatus(): Promise<SetupStatus>', 'warnMissingBrowserPart?: boolean', 'account_takeover?: AccountTakeover',
-        'account_event?: AccountEvent', 'phone?: PhoneIntelligence', 'timezone?: TimezoneSignal', 'interface AccountEventInput']) {
+        'account_event?: AccountEvent', 'phone?: PhoneIntelligence', 'timezone?: TimezoneSignal', 'interface AccountEventInput',
+        'ai_agentic?: boolean', 'ai_crawling?: boolean', 'ai_operator?: string', 'risk_tags?: string[]', 'service_tags?: string[]']) {
         assert.ok(types.includes(name), name);
     }
 });

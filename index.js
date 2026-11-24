@@ -325,7 +325,7 @@ class Sentinel {
      * score and limited public-feed evidence (cloud ranges and Tor).
      * VPN/proxy evidence needs evaluate() with a browser token; an unknown
      * IP or false signal is not proof that the visitor is safe.
-     * Has its own monthly allowance, 10x the plan's checks (no plan has an
+     * Has its own monthly allowance, 30x the plan's checks (no plan has an
      * hourly limit since 2026-10-29).
      *
      * @param {string} ip — public IPv4 or IPv6 address, e.g. '185.220.101.34'
