@@ -156,13 +156,7 @@ The API omits fields when the source did not report them.
 
 ### 0.5.0 (2026-10-27)
 
-- `evaluate()` sends the fields the API has read since 23 October 2026: `tz`,
-  `phone`, and for login protection `event`, `loginSucceeded`, `succeeded`,
-  `sessionId`, `userAgent`, `ip`, `reason`, `verificationType` and
-  `verifiedEvent`. See [Logins, signups and account events](#logins-signups-and-account-events).
-- The account events `password_change`, `verification`, `logout` and
-  `account_change` can be sent without the browser's token. A login, a signup
-  and a plain check still need it.
+- Added time zone and contact fields, plus sign-in outcomes for account linking.
 - A value the API would ignore or misread (an `event` such as `'signin'`, a
   `loginSucceeded` that is not `true` or `false`) throws a `SentinelError`
   before anything is sent, instead of a check that quietly runs without it.
@@ -171,7 +165,7 @@ The API omits fields when the source did not report them.
   turns it off.
 - New `sentinel.setupStatus()` (`GET /v1/setup`) says whether your checks
   arrive complete and what to fix.
-- Types for the answer's `account_takeover`, `account_event`, `phone`,
+- Types for the answer's `phone`,
   `timezone`, the scored `email` fields, `sandbox` and `sample`.
 
 ## What you get back
@@ -202,9 +196,7 @@ Illustrative response. The VPN/proxy service name is returned only when known; o
 Try the live sample (same shape, no key needed):
 `curl "https://maskbreak.com/v1/evaluate/sample?scenario=vpn"`
 
-With `event`, `email`, `phone` or `tz` in the request, the answer also carries
-`account_takeover` or `account_event`, the scored `email` fields, `phone` and
-`timezone`: see [Logins, signups and account events](#logins-signups-and-account-events).
+Optional email, phone and time-zone fields are returned when those checks run.
 
 Legacy `details` / `deviceIntel` fields are still returned for backwards
 compatibility with 0.1.0 integrations.
@@ -470,20 +462,9 @@ const info = await sentinel.lookup('185.220.101.34');
 // info.network     → { asn, org, country, city }
 ```
 
-## Logins, signups and account events
+## Check a sign-in
 
-Since 0.5.0 `evaluate()` sends the fields the API reads for login protection
-and for email and phone intelligence, so the call your login, signup and
-account handlers already make carries them. The examples use the `evidence()`
-and `check()` helpers above.
-
-### A login
-
-Make the check after your own password check, so it can say whether the
-password was right. `accountId` is the account being signed in to, as your
-database knows it (never a form field). Each call is a check: this one takes
-the place of the [gate before the password hash](#stripe-checkout-and-login-check-before-the-expensive-step)
-on your login route rather than adding to it.
+Use the account ID from your server and the credential result from your existing sign-in handler. The visitor check can prompt a second factor when your policy calls for review. A failed credential check never establishes a device link.
 
 ```js
 app.post('/login', async (req, res) => {
@@ -497,15 +478,12 @@ app.post('/login', async (req, res) => {
       event: 'login',
       accountId: user ? String(user.id) : undefined,  // your own id for the account
       loginSucceeded: passwordOk,                     // send failed attempts too
-      sessionId: req.sessionID,                       // your session ID: only a keyed hash leaves Maskbreak
-      userAgent: req.get('user-agent'),               // as your server received it
-      ip: req.ip                                      // as your server saw it
     });
   } catch (err) {
     console.log('[maskbreak] check unavailable:', err.message);
     monthUsedUp = err.status === 429 && err.body?.code === 'monthly_quota_exceeded';
   }
-  console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result?.account_takeover);
+  console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
 
   if (!passwordOk) return res.status(401).json({ error: 'Wrong email or password.' });
   const verifyAtLimit = (process.env.MASKBREAK_QUOTA_VERIFY_ACTIONS || '').split(',').map(s => s.trim()).includes('login');
@@ -518,125 +496,11 @@ app.post('/login', async (req, res) => {
 });
 ```
 
-- `ip` is used only when the network token gave no address, and never changes
-  the network verdict. Behind a proxy, set Express's `trust proxy` for your
-  setup so `req.ip` is the visitor's address; never take the first
-  `X-Forwarded-For` value on trust.
-- The answer gains `account_takeover`: `{ checked: true, score, risk, signals }`
-  with a score from 0 to 100 (higher is riskier; `risk` is `low` below 50,
-  `medium` from 50, `high` from 80). A score of 80 or more adds the reason
-  `account_takeover_risk` and raises `allow` to `review`, never to `block`:
-  answer it with a second factor or an emailed code.
-- `checked: false` comes with `why`: `not_enabled` (switched off in Settings),
-  `no_account_id`, `test`, `busy`, `unavailable` or `not_available`. Treat it
-  as no opinion; the rest of the answer is unaffected.
-- Login protection is on for every account until a workspace admin switches
-  it off in Settings, and it acts only when you send `event` with
-  `accountId`. Its score learns from the logins of every Maskbreak customer who
-  uses login protection; say so in your own privacy notice. A login counts as
-  a normal check.
-- The `account` object (the account network) reads a login whose
-  `loginSucceeded` is not `true` as an attempt, since 5 November 2026: it
-  counts in `device_accounts_24h` and `ip_accounts_24h`, never in that
-  account's own devices, addresses or connected accounts. Send
-  `loginSucceeded` with every login check.
+## Email and phone at signup
 
-### A signup with email and phone
+With contact intelligence enabled, a visitor check can also evaluate an email address or phone number submitted with the signup. Inspect the returned contact fields and the overall decision in watch mode before enabling enforcement.
 
-Send `event: 'signup'` once your database has the new account's id, with the
-address and the number the person gave:
-
-```js
-const result = await check({
-  ...evidence(req.body),
-  event: 'signup',               // the account was created
-  accountId: String(user.id),    // the new account's id, from your database
-  email: req.body.email,
-  phone: req.body.phone          // international format, such as +44 20 7946 0958
-});
-console.log('[maskbreak]', result?.decision, result?.email, result?.phone, result?.account_event);
-// A review: keep the new account waiting until it confirms its email or phone.
-```
-
-- With email and phone intelligence on, `email` gains `checked`, `score`,
-  `risk`, `signals` and a few facts, and the answer gains a `phone` object of
-  the same shape. A score of 80 or more adds `email_high_risk` or
-  `phone_high_risk` and raises `allow` to `review`, never to `block`.
-- Email and phone intelligence is on by default for accounts created from 23
-  October 2026; an older account switches it on in Settings, and any account
-  can switch it off there. Each address or number scored uses one of the
-  plan's daily email-and-phone checks: Free 9, Starter 60, Growth 150, Scale
-  450 a day.
-- `checked: false` comes with `why`: `not_enabled`, `quota` (the day's checks
-  are used up), `invalid`, `test`, `busy`, `unavailable` or `not_available`;
-  `invalid`, `busy` and `unavailable` use no daily check. Treat it as no
-  opinion. Maskbreak never stores or logs the address or the number.
-- `account_event` says whether login protection took the signup:
-  `{ event: 'signup', recorded: true }`.
-
-### Account events
-
-A password change, a second factor, a logout and an account change go to login
-protection too: no score comes back, and they teach it what is normal for each
-account, so its login scores get sharper. These four may go without the
-browser's token (since 0.5.0), for handlers with no page in front of them:
-
-```js
-// After your password-change handler has saved the new password:
-await check({
-  event: 'password_change',
-  accountId: String(req.session.userId),  // from your server-side session
-  succeeded: true,
-  reason: 'user',                         // 'forgot' after a reset link, 'forced' for a reset you required
-  sessionId: req.sessionID,
-  userAgent: req.get('user-agent'),
-  ip: req.ip
-});
-
-// A second factor, with how it was checked and what it was for:
-await check({ event: 'verification', accountId: String(user.id), succeeded: codeOk,
-  verificationType: 'sms', verifiedEvent: 'login' });
-
-await check({ event: 'logout', accountId: String(req.session.userId), sessionId: req.sessionID });
-await check({ event: 'account_change', accountId: String(req.session.userId), email: newEmail }); // the new email
-```
-
-- The answer gains `account_event`: `{ event, recorded: true }`, or
-  `recorded: false` with the same `why` values as a login.
-- Sent with `...evidence(req.body)` from a form that carries the script, it is
-  a full check. Without the token it is a degraded one (`degraded: true`): its
-  `decision` says nothing about the visitor's network, so read
-  `account_event`. A recorded event counts as a check.
-- A login and a signup are visits, so they still need the token:
-  `evaluate()` throws without it, as before.
-
-### The visitor's time zone
-
-`tz` comes with the browser's evidence (`Sentinel.collect()` returns it, a form
-carries `sentinel_tz`), so `evidence()` above already sends it:
-
-```js
-const result = await check({ token, fingerprintEventId, tz });
-// result.timezone → { reported: 'Europe/Tallinn', country: 'EE', matches_ip: true, checked: true }
-```
-
-A zone whose country disagrees with an ordinary-looking address adds
-`timezone_mismatch` and raises `allow` to `review`; it never blocks. On a VPN,
-proxy, Tor or datacenter exit, where a mismatch is expected, nothing is raised
-(`checked: false`).
-
-### Refused before sending
-
-A value the API would ignore or misread throws a `SentinelError`, and nothing is
-sent: an `event` other than `login`, `signup`, `password_change`,
-`verification`, `logout` and `account_change` (read case-insensitively, so
-`'signin'` is refused), a `reason`, `verificationType` or `verifiedEvent`
-outside its list, a `loginSucceeded` or `succeeded` that is not `true` or
-`false`, a `tz`, `phone`, `userAgent` or `ip` that is not a string, and a
-`sessionId` that is not a string or a number or is longer than 256 characters.
-A field that is `undefined`, `null` or `''` is left out of the request. A
-`token` that is only whitespace (a space, a tab, a line break, U+00A0, U+FEFF)
-counts as missing, as the API reads it (since 0.5.2).
+[Contact fields and examples](https://maskbreak.com/api#email-phone-intelligence)
 
 ## Check your setup
 
@@ -676,29 +540,23 @@ API sends it.
 
 ### `sentinel.evaluate(input)`
 
-Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing, empty or only whitespace (except for the four account events below), for a value the API would ignore or misread ([Refused before sending](#refused-before-sending)), and on network/API failure — an API error carries `.status` and `.body`.
+Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing, empty or only whitespace (except for the four account events below), for a value the API would ignore or misread, and on network/API failure — an API error carries `.status` and `.body`.
 
 | Field | Sent as | Notes |
 |---|---|---|
 | `token` | `token` | The browser's network token. Required, except for `event` `password_change`, `verification`, `logout` and `account_change` |
 | `fingerprintEventId` | `fingerprintEventId` | The browser check; without it the SDK warns once (below) |
-| `accountId` | `accountId` | Your own id for the account (string or number); login protection needs it with `event` |
+| `accountId` | `accountId` | Your own id for the account (string or number) |
 | `email` | `email` | The address the person gave |
 | `tz` | `tz` | The visitor's IANA time zone (since 0.5.0) |
 | `phone` | `phone` | International format (since 0.5.0) |
 | `event` | `event` | `login`, `signup`, `password_change`, `verification`, `logout` or `account_change` (since 0.5.0) |
 | `loginSucceeded` | `loginSucceeded` | With `login`: `true` or `false` |
 | `succeeded` | `succeeded` | With `password_change` or `verification`: `true` or `false` (absent means pending) |
-| `sessionId` | `sessionId` | With an event: your session ID, at most 256 characters |
-| `userAgent`, `ip` | `userAgent`, `ip` | With an event: as your server received them |
-| `reason` | `reason` | With `password_change`: `user`, `forgot` or `forced` |
-| `verificationType` | `verificationType` | With `verification`: `email`, `sms`, `phone_call`, `app`, `push`, `security_key` or `captcha` |
-| `verifiedEvent` | `verifiedEvent` | With `verification`: `login`, `signup`, `password_change` or `account_change` |
 
 - `fingerprintEventId` — requests device signals (tampering, automation, emulator, …). When the device is identified, `device.times_seen`, `device.first_seen` and `device.returning` describe its retained sightings across Maskbreak, not just your account. These records are pruned after 90 days of inactivity; `first_seen` is not necessarily the device's lifetime first visit.
 - `accountId` — your own user id for this session (take it from your server-side session, never from a form field); with an identified device, enables customer-scoped account linking (`device.linked_accounts` / `device.multi_account`). With a live key the response also carries the `account` object (the account network, since 18 October 2026): devices this account used in 24 hours and 90 days, your accounts on this device and on this address in 24 hours, `new_device` for a returning account, and how many of your other accounts it shares a device or an address with. Its reasons `account_new_device`, `account_many_devices` and `ip_many_accounts` inform only; `device_many_accounts` (3+ of your accounts on one device within 24 hours) raises an allow to review. Links are keyed hashes and never cross customers; the account network also keeps your accountId encrypted so your console can show which accounts are linked. Both are pruned 90 days after last use. At sign-in, send it once the credential was accepted, or with `event: 'login'` and `loginSucceeded`: since 5 November 2026 a check with `event` `login`, `verification` or `password_change` whose `loginSucceeded` (or `succeeded`) is not `true` counts as a sign-in attempt, which adds nothing to the account's own devices or addresses.
 - New `device.customer_history` reports distinct verified events, first/latest visit and associated account counts **only for your customer account** over a rolling 90-day window. Fresh live-key events start this history; test keys and duplicate event submissions do not add to it. Derive `accountId` from your backend's authenticated session, never a browser-claimed account ID. Shared devices are not automatically fraud. Legacy fields above retain their meanings.
-- An optional, default-off [GPU evidence beta](https://maskbreak.com/api#device-history) is available over raw HTTP with explicit browser collection. Published SDK versions may omit `gpuEvidence`; use the documented HTTP flow. It does not change fraud decisions or automatically link devices.
 - `email` — adds `email.disposable` to the response; burner domains escalate `allow` to `review`. With email and phone intelligence on (the default for accounts created from 23 October 2026), `email` also carries the provider's `checked`, `score`, `risk` and `signals`, and each address scored uses one of the plan's daily email-and-phone checks.
 
 A check sent without `fingerprintEventId` has no browser part, so bots, fake
@@ -722,7 +580,7 @@ Convenience: runs `evaluate()` and returns a boolean; it throws `SentinelError` 
 
 Since **0.4.0** a test, sandbox or sample answer (`test`, `sandbox` or `sample` is `true`) makes `shouldBlock()` return `true` whatever the predicate: the fixed test tokens are public, so a visitor whose real visit would be blocked could type `test_clean` into your form field. In your own test runs, create the client with `new Sentinel({ allowTestResults: true })`. `Sentinel.isFixtureAnswer(result)` tells you the same for a result you route yourself.
 
-> `accountId`, `email`, and `lookup()` require **v0.2.1 or later** (`npm install @sentinelsup/sdk@latest`) — the older 0.1.2 silently ignores `accountId`/`email`. `tz`, `phone`, `event` and the other login-protection fields, and `setupStatus()`, require **v0.5.0 or later**: older versions leave them out of the request.
+> `accountId`, `email`, and `lookup()` require **v0.2.1 or later** (`npm install @sentinelsup/sdk@latest`) — the older 0.1.2 silently ignores `accountId`/`email`. `tz`, `phone`, `event` and sign-in outcome fields, and `setupStatus()`, require **v0.5.0 or later**: older versions leave them out of the request.
 
 ## Testing
 
@@ -735,8 +593,8 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 ```
 
 - **No account yet?** The public sandbox key `sk_test_sandbox` answers the same `test_*` tokens with the same shapes — no signup, nothing stored.
-- **Login protection, email and phone:** test keys, test tokens and the sandbox never reach those providers. `account_takeover`, `email` and `phone` answer `checked: false, why: 'test'`, and `account_event` answers `recorded: false, why: 'test'`, so you can test the shape without using the day's email-and-phone checks.
-- **CI / staging with real traffic:** every account also has a personal `sk_test_…` key (Settings → API keys) that runs the live detection — device intelligence, your rules and exception pins (login protection, email and phone intelligence and the account network do not run for it, and it adds nothing to `times_seen` or `linked_accounts`, which its answers leave out). Its events are marked test, kept out of your stats and never fire webhooks; its checks count toward the monthly allowance (the fixed `test_*` tokens and `sk_test_sandbox` do not). It is exempt from the account's IP allowlist.
+- **Email and phone:** Test keys and test tokens skip contact scoring and consume no daily contact checks.
+- **CI / staging with real traffic:** every account also has a personal `sk_test_…` key (Settings → API keys) that runs the live detection — device intelligence, your rules and exception pins (email and phone intelligence and the account network do not run for it, and it adds nothing to `times_seen` or `linked_accounts`, which its answers leave out). Its events are marked test, kept out of your stats and never fire webhooks; its checks count toward the monthly allowance (the fixed `test_*` tokens and `sk_test_sandbox` do not). It is exempt from the account's IP allowlist.
 
 ## Rate limits
 
