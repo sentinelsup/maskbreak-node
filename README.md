@@ -1,36 +1,16 @@
-# @sentinelsup/sdk
+# Maskbreak Node.js SDK
 
-Official Node.js SDK for [Maskbreak](https://maskbreak.com) — network and device fraud signals for browser-SDK-backed visits, plus limited public IP intelligence.
+Trace a signup from an Express route to a server-side decision. The client uses the built-in Node.js fetch implementation.
 
-[![npm](https://img.shields.io/npm/v/@sentinelsup/sdk.svg)](https://www.npmjs.com/package/@sentinelsup/sdk)
-[![npm downloads](https://img.shields.io/npm/dm/@sentinelsup/sdk.svg)](https://www.npmjs.com/package/@sentinelsup/sdk)
-[![types](https://img.shields.io/npm/types/@sentinelsup/sdk.svg)](./index.d.ts)
-[![license](https://img.shields.io/npm/l/@sentinelsup/sdk.svg)](./LICENSE)
-
-## Set up with AI (fastest)
-
-Using Claude Code, Cursor, Copilot, or any AI coding assistant? Paste this
-one prompt and it wires the whole integration — frontend script, backend
-check, env var, and a test:
-
-> Fetch https://maskbreak.com/integrate.md and follow it to add Maskbreak fraud
-> protection to this app — protect signup, login, and checkout. Start in watch
-> mode (MASKBREAK_MODE). Read the API key from the server-only
-> MASKBREAK_API_KEY environment variable; I will configure the secret
-> separately. Never put it in client-side code. Then show me how to test it.
-
-Never paste the key itself into a prompt: set it in your hosting secrets.
-
-[`integrate.md`](https://maskbreak.com/integrate.md) is the canonical
-machine-readable integration guide, kept in sync with the live API.
+**Node.js 18+ · JavaScript and TypeScript** · [npm package](https://www.npmjs.com/package/@sentinelsup/sdk) · [API reference](https://maskbreak.com/api)
 
 ## Install
 
-```bash
+```sh
 npm install @sentinelsup/sdk
 ```
 
-Zero dependencies. Requires Node.js 18+ with built-in `fetch`. Other runtimes and edge bundlers are not covered by this package's test matrix.
+[First visitor check](#quick-start) · [Signup guard](examples/signup-guard.js) · [Test your integration](#testing) · [Integration guide](https://maskbreak.com/integrate.md)
 
 ## Quick start
 
@@ -107,13 +87,13 @@ app.post('/signup', async (req, res, next) => {
     }
   } catch (err) {
     problem = err.message; // an uncaught rejection would end an Express 4 process
-    // The month's checks are used up: let the action through, logged, until the 1st.
     monthUsedUp = err.status === 429 && err.body?.code === 'monthly_quota_exceeded';
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result ? result.reasons : problem);
   // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
   // A degraded answer is one the network check could not run for: no verdict either.
-  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
+  const verifyAtLimit = (process.env.MASKBREAK_QUOTA_VERIFY_ACTIONS || '').split(',').map(s => s.trim()).includes('signup');
+  if (MODE === 'enforce' && (!monthUsedUp || verifyAtLimit) && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
     return res.status(result && result.decision === 'block' ? 403 : 409).json({ error: 'Verification required' });
   }
   next(); // watch mode, or an allow: your existing handler runs
@@ -356,13 +336,13 @@ export async function POST(request) {
     else if (MODE !== 'enforce') result = await reportWithoutToken({ fingerprintEventId, tz, email });
   } catch (err) {
     console.log('[maskbreak] check unavailable:', err.message);
-    // The month's checks are used up: let the action through, logged, until the 1st.
     monthUsedUp = err.status === 429 && err.body?.code === 'monthly_quota_exceeded';
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
   // A test or sample answer is never a real visitor's verdict: anyone can send a test token.
   // A degraded answer is one the network check could not run for: no verdict either.
-  if (MODE === 'enforce' && !monthUsedUp && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
+  const verifyAtLimit = (process.env.MASKBREAK_QUOTA_VERIFY_ACTIONS || '').split(',').map(s => s.trim()).includes('signup');
+  if (MODE === 'enforce' && (!monthUsedUp || verifyAtLimit) && (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result))) {
     return Response.json({ error: 'Verification required' }, { status: result && result.decision === 'block' ? 403 : 409 });
   }
   return createAccount(body); // your existing signup logic
@@ -384,8 +364,8 @@ const MODE = process.env.MASKBREAK_MODE || 'watch';
 // Watch (the default) logs and always continues. Enforce holds everything but
 // a real allow: no token, no answer, review, block, a degraded answer (no
 // network check) or a test answer (anyone can send a test token). A used-up
-// month continues, logged, until the 1st.
-async function gate(body) {
+// month uses the quota choice for the action set by this route.
+async function gate(body, action) {
   const input = evidence(body);
   let result = null, monthUsedUp = false;
   try {
@@ -395,7 +375,8 @@ async function gate(body) {
     monthUsedUp = err.status === 429 && err.body?.code === 'monthly_quota_exceeded';
   }
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer');
-  if (MODE !== 'enforce' || monthUsedUp) return null;
+  if (MODE !== 'enforce') return null;
+  if (monthUsedUp) return (process.env.MASKBREAK_QUOTA_VERIFY_ACTIONS || '').split(',').map(s => s.trim()).includes(action) ? 409 : null;
   if (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result)) {
     return result && result.decision === 'block' ? 403 : 409; // 409: your verification flow
   }
@@ -403,7 +384,7 @@ async function gate(body) {
 }
 
 app.post('/api/checkout', async (req, res) => {
-  const held = await gate(req.body);
+  const held = await gate(req.body, 'checkout');
   if (held) return res.status(held).json({ error: 'Verification required' });
   const intent = await stripe.paymentIntents.create({
     amount: calculateTotal(req.body.items), // from your own prices, never a submitted amount
@@ -414,7 +395,7 @@ app.post('/api/checkout', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res, next) => {
-  const held = await gate(req.body); // before bcrypt or argon2 runs
+  const held = await gate(req.body, 'login'); // before bcrypt or argon2 runs
   if (held) return res.status(held).json({ error: 'Verification required' });
   next(); // your existing credential check
 }, existingLoginHandler);
@@ -527,7 +508,8 @@ app.post('/login', async (req, res) => {
   console.log('[maskbreak]', MODE, result ? result.decision : 'no answer', result?.account_takeover);
 
   if (!passwordOk) return res.status(401).json({ error: 'Wrong email or password.' });
-  if (MODE === 'enforce' && !monthUsedUp) {
+  const verifyAtLimit = (process.env.MASKBREAK_QUOTA_VERIFY_ACTIONS || '').split(',').map(s => s.trim()).includes('login');
+  if (MODE === 'enforce' && (!monthUsedUp || verifyAtLimit)) {
     if (result && result.decision === 'block') return res.status(403).json({ error: 'Sign-in unavailable.' });
     // Review, no answer, a degraded or a test answer: a second factor, not a refusal.
     if (!result || result.decision !== 'allow' || result.degraded || Sentinel.isFixtureAnswer(result)) return sendSecondFactor(res, user);
@@ -758,7 +740,7 @@ await sentinel.evaluate({ token: 'test_clean' }); // → decision: 'allow' path
 
 ## Rate limits
 
-Visitor checks (`evaluate()`) are counted per calendar month in UTC, with no hourly cap: **Free — 10,000 a month, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 30× the plan's checks (300,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. The quick start lets the action through on that answer and logs it, in enforce mode too, so running out never takes your form offline.
+Visitor checks (`evaluate()`) are counted per calendar month in UTC, with no hourly cap: **Free — 10,000 a month, no credit card**; paid plans from €29 a month ([pricing](https://maskbreak.com/pricing)). IP lookups (`lookup()`) have their own monthly allowance, 30× the plan's checks (300,000 on Free). A used-up month answers `429` with `code: "monthly_quota_exceeded"` and `Retry-After` until the 1st; there are no overage charges. At this limit, the examples log the refusal. Set `MASKBREAK_QUOTA_VERIFY_ACTIONS=checkout,account_recovery` on your server to require verification for those actions in enforce mode. Other actions continue unchecked.
 
 On `503` with `.body.code === 'storage_unavailable'`, the key could not be checked at that moment (not an invalid key; `401` is): retry later and apply your outage policy meanwhile.
 
