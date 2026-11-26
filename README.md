@@ -138,6 +138,10 @@ Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the 
 
 ## What's new
 
+### 0.5.5
+
+The related links now point to the live connection check and the IP lookup API reference.
+
 ### 0.5.4
 
 Visit responses type the optional `network.risk_tags` and `network.service_tags`
@@ -788,7 +792,8 @@ SDK-backed visits can supply VPN/proxy, cloud-hosting and Tor signals, with VPN/
 ## Related
 
 - **Python SDK** — [`sentinelsup`](https://github.com/sentinelsup/maskbreak-python) on PyPI
-- **Free IP lookup tool** — [maskbreak.com/ip-lookup](https://maskbreak.com/ip-lookup)
+- [Test your connection](https://maskbreak.com/#scanner)
+- [Look up an IP address with the API](https://maskbreak.com/api#lookup)
 
 ## License
 
