@@ -60,7 +60,7 @@ const blankToken = value => typeof value === 'string' && value.trim() === '';
 // reads the name case-insensitively and ignores any other value without a
 // word, so a typo such as "signin" would run the check without login
 // protection: evaluate() refuses it instead (0.5.0).
-const EVENTS = ['login', 'signup', 'password_change', 'verification', 'logout', 'account_change'];
+const EVENTS = ['login', 'signup', 'password_change', 'verification', 'logout', 'account_change', 'checkout', 'account_recovery'];
 // Account events a server reports on its own, often with no page in front of
 // it: the API records them without the visit's network token. A login and a
 // signup are visits and still need the token.
@@ -282,8 +282,8 @@ class Sentinel {
      *   form's sentinel_tz field); adds `timezone` when recognised (0.5.0)
      * @param {string} [input.phone] — the visitor's phone number in international format; with email and
      *   phone intelligence on, adds the `phone` object with a score (0.5.0)
-     * @param {'login'|'signup'|'password_change'|'verification'|'logout'|'account_change'} [input.event] —
-     *   login protection (0.5.0): 'login' adds `account_takeover`, the others `account_event`
+     * @param {'login'|'signup'|'password_change'|'verification'|'logout'|'account_change'|'checkout'|'account_recovery'} [input.event] —
+     *   action label recorded with the visitor check
      * @param {boolean} [input.loginSucceeded] — with event 'login': whether the credential was right
      * @param {boolean} [input.succeeded] — with event 'password_change' or 'verification': whether it
      *   succeeded (absent = pending)
@@ -394,8 +394,8 @@ module.exports.SentinelError = SentinelError;
  * @property {number} evaluated_in_ms
  * @property {EmailSignals} [email] — present when the optional email input was supplied
  * @property {object} [account] — the account network (since 2026-10-18): present when accountId was sent with a live key; { seen_before, first_seen, new_device, devices_24h, devices_90d, device_accounts_24h, ip_accounts_24h, connected_accounts, connected_by_device }
- * @property {AccountTakeover} [account_takeover] — login protection: present when event was 'login' (0.5.0)
- * @property {AccountEvent} [account_event] — login protection: present when event was another account event (0.5.0)
+ * @property {AccountTakeover} [account_takeover] — historical login score from before this feature was retired
+ * @property {AccountEvent} [account_event] — historical account-event provider response
  * @property {PhoneIntelligence} [phone] — email and phone intelligence: present when phone was sent (0.5.0)
  * @property {TimezoneSignal} [timezone] — present when a recognised tz was sent and the address's country is known (0.5.0)
  * @property {boolean} [degraded] — true when the network part was unavailable (no or an unreadable token)

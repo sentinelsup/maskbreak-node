@@ -29,7 +29,7 @@ export interface DeviceIntel {
     highActivity?: boolean;
 }
 
-export interface NetworkSignals extends Pick<LookupNetwork, 'risk_tags' | 'service_tags'> {
+export interface NetworkSignals extends Pick<LookupNetwork, 'risk_tags' | 'service_tags' | 'ai_bot_range'> {
     vpn: boolean;
     /** Also true for Apple's iCloud Private Relay (see privacy_relay). */
     proxy: boolean;
@@ -237,7 +237,7 @@ export interface PhoneIntelligence {
  *  reach the provider), busy or unavailable (the rest of the answer is unaffected). */
 export type LoginProtectionWhy = 'not_enabled' | 'not_available' | 'no_account_id' | 'test' | 'busy' | 'unavailable';
 
-/** Login protection (since 23 October 2026): present when you sent event 'login'. */
+/** Historical login-scoring response, retained for existing consumers. */
 export interface AccountTakeover {
     /** True when the login was scored. */
     checked: boolean;
@@ -301,9 +301,9 @@ export interface EvaluateResult {
     email?: EmailSignals;
     /** Present when you sent `phone` (email and phone intelligence, since 23 October 2026) */
     phone?: PhoneIntelligence;
-    /** Present when you sent event 'login' (login protection, since 23 October 2026) */
+    /** @deprecated Historical response field for records created before login scoring was retired. */
     account_takeover?: AccountTakeover;
-    /** Present when you sent another account event (login protection, since 23 October 2026) */
+    /** @deprecated Historical provider response. Current checks record the event name. */
     account_event?: AccountEvent;
     /** Present when you sent a recognised `tz` and the address's country is known */
     timezone?: TimezoneSignal;
@@ -350,6 +350,12 @@ export interface LookupSignals {
 }
 
 export interface LookupNetwork {
+    /** Operator-published IP ranges. A range may have more than one published use. */
+    ai_bot_range?: { operator: string; type: 'crawler' | 'agent' | 'mixed'; bots: { name: string; category: string }[] };
+    /** Activity observed on the looked-up IP, when reported. */
+    ai_agentic?: boolean;
+    ai_crawling?: boolean;
+    ai_operator?: string;
     /** Observations about this IP. Absent when the source did not supply them. */
     risk_tags?: string[];
     /** Tunnel operators or proxy services observed behind this address. */
@@ -372,11 +378,12 @@ export interface LookupResponse {
     risk_score: number;
     /** Null when known is false */
     signals: LookupSignals | null;
+    rule_matched?: string[];
     network: LookupNetwork | null;
     latency_ms: number;
-    /** Present only when an exception pin changed `verdict` */
+    /** Engine verdict before an AI policy match or IP exception */
     engine_verdict?: 'allow' | 'review' | 'block';
-    verdict_source?: 'exception';
+    verdict_source?: 'rules' | 'exception';
     exception_matched?: string[];
     /** Present when the call used the per-account sk_test_ key */
     test?: boolean;
@@ -400,7 +407,7 @@ export interface SentinelOptions {
 }
 
 /** The `event` values (login protection, since 23 October 2026). */
-export type EvaluateEvent = 'login' | 'signup' | 'password_change' | 'verification' | 'logout' | 'account_change';
+export type EvaluateEvent = 'login' | 'signup' | 'password_change' | 'verification' | 'logout' | 'account_change' | 'checkout' | 'account_recovery';
 /** Every event but 'login': reported to login protection, no score comes back. */
 export type AccountEventName = 'signup' | 'password_change' | 'verification' | 'logout' | 'account_change';
 /** The account events evaluate() sends without the network token (since 0.5.0). */
@@ -432,8 +439,7 @@ export interface EvaluateInput {
      *  code). With email and phone intelligence on it adds the `phone` object with a
      *  score (since 0.5.0). Never stored or logged. */
     phone?: string;
-    /** Login protection (since 0.5.0): 'login' adds `account_takeover` with a score; the
-     *  other events add `account_event`. Needs `accountId`. Read case-insensitively. */
+    /** Action label recorded with the check. Read case-insensitively. */
     event?: EvaluateEvent;
     /** With event 'login': whether the password (or other credential) was right. Send
      *  failed attempts too. */

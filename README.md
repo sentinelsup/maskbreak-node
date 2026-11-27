@@ -118,6 +118,10 @@ Since v0.3.3, `new Sentinel()` without a key reads `MASKBREAK_API_KEY` from the 
 
 ## What's new
 
+### 0.5.6
+
+Use `checkout` or `account_recovery` as the event on a browser-backed check. The Events dashboard and CSV export can filter checks by these actions. Set the event from the handler processing the request.
+
 ### 0.5.5
 
 The related links now point to the live connection check and the IP lookup API reference.
@@ -550,7 +554,7 @@ Returns `EvaluateResult`. Throws `SentinelError` when `token` is missing, empty 
 | `email` | `email` | The address the person gave |
 | `tz` | `tz` | The visitor's IANA time zone (since 0.5.0) |
 | `phone` | `phone` | International format (since 0.5.0) |
-| `event` | `event` | `login`, `signup`, `password_change`, `verification`, `logout` or `account_change` (since 0.5.0) |
+| `event` | `event` | `login`, `signup`, `password_change`, `verification`, `logout`, `account_change`, `checkout` or `account_recovery` (since 0.5.0) |
 | `loginSucceeded` | `loginSucceeded` | With `login`: `true` or `false` |
 | `succeeded` | `succeeded` | With `password_change` or `verification`: `true` or `false` (absent means pending) |
 

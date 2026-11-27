@@ -374,6 +374,10 @@ test('evaluate sends each new field under its API name, and only when given', as
 });
 
 test('the fixed-list fields are read like the API reads them, and sent in its spelling', async () => {
+    for (const event of ['checkout', 'account_recovery']) {
+        const { calls } = await sent({ token: 'tok', event });
+        assert.deepEqual(calls[0].body, { token: 'tok', event });
+    }
     const { calls } = await sent({ token: 'tok', fingerprintEventId: 'evt', event: ' Password_Change ', reason: 'FORGOT', verificationType: 'Security_Key', verifiedEvent: 'SignUp' });
     assert.deepEqual(calls[0].body, { token: 'tok', fingerprintEventId: 'evt', event: 'password_change', reason: 'forgot', verificationType: 'security_key', verifiedEvent: 'signup' });
 });
@@ -385,7 +389,7 @@ test('a value the API would ignore or misread is refused before anything is sent
     try {
         const s = new Sentinel({ apiKey: 'sk_live_refuse', warnMissingBrowserPart: false });
         const cases = [
-            [{ event: 'signin' }, /event must be one of login, signup, password_change, verification, logout, account_change; the API ignores any other value/],
+            [{ event: 'signin' }, /event must be one of login, signup, password_change, verification, logout, account_change, checkout, account_recovery; the API ignores any other value/],
             [{ event: 42 }, /event must be one of/],
             [{ event: 'login', reason: 'expired' }, /reason must be one of user, forgot, forced; the API reads any other value as user/],
             [{ event: 'verification', verificationType: 'totp' }, /verificationType must be one of email, sms, phone_call, app, push, security_key, captcha/],
@@ -594,16 +598,16 @@ test('setupStatus GETs /v1/setup with the key and returns the answer as is', asy
     assert.equal(seen[0].body, '');
 });
 
-test('the package, its lockfile and its types agree on 0.5.5', () => {
+test('the package, its lockfile and its types agree on 0.5.6', () => {
     const fs = require('node:fs');
-    assert.equal(require('./package.json').version, '0.5.5');
+    assert.equal(require('./package.json').version, '0.5.6');
     const lock = require('./package-lock.json');
-    assert.equal(lock.version, '0.5.5');
-    assert.equal(lock.packages[''].version, '0.5.5');
+    assert.equal(lock.version, '0.5.6');
+    assert.equal(lock.packages[''].version, '0.5.6');
     const types = fs.readFileSync(`${__dirname}/index.d.ts`, 'utf8');
     for (const name of ['setupStatus(): Promise<SetupStatus>', 'warnMissingBrowserPart?: boolean', 'account_takeover?: AccountTakeover',
         'account_event?: AccountEvent', 'phone?: PhoneIntelligence', 'timezone?: TimezoneSignal', 'interface AccountEventInput',
-        "NetworkSignals extends Pick<LookupNetwork, 'risk_tags' | 'service_tags'>", 'ai_agentic?: boolean', 'ai_crawling?: boolean', 'ai_operator?: string', 'risk_tags?: string[]', 'service_tags?: string[]']) {
+        "NetworkSignals extends Pick<LookupNetwork, 'risk_tags' | 'service_tags' | 'ai_bot_range'>", 'ai_agentic?: boolean', 'ai_crawling?: boolean', 'ai_operator?: string', 'risk_tags?: string[]', 'service_tags?: string[]']) {
         assert.ok(types.includes(name), name);
     }
 });
